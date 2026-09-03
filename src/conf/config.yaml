@@ -1,0 +1,33 @@
+defaults:
+  - algorithm: sac
+  - _self_
+
+seed: 0
+total_steps: 1_000_000
+n_envs: 1
+device: auto
+
+env:
+  id: Swimmer-v5
+eval_env:
+  id: Swimmer-v5
+
+eval:
+  episodes: 5
+  interval: 5000
+
+wandb:
+  enabled: true
+  project: triage_erl
+  entity: evo_rl
+  name: null
+  tags: []
+
+# path to write {"eval_reward": float} after training (hyperparameter sweeps)
+result_file: null
+
+hydra:
+  run:
+    dir: outputs/${algorithm.name}_${env.id}/${now:%Y-%m-%d_%H-%M-%S}
+  job:
+    chdir: false

@@ -1,0 +1,45 @@
+[project]
+name = "triage-erl"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "equinox>=0.13.8",
+    "flax>=0.12.9",
+    "jax>=0.11.1",
+    "optax>=0.2.8",
+    "wandb>=0.29.0",
+    "gymnasium[mujoco]==1.2.3",
+    "mujoco==3.6.0",
+    "dm-control==1.0.38",
+    "shimmy==2.0.1",
+    "myosuite==2.12.2",
+    "sbx-rl>=0.28.0",
+    "hydra-core>=1.3.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+filterwarnings = [
+    "error",
+    # dm_control sets .shape on numpy arrays; upstream, unfixable here.
+    "ignore:Setting the shape on a NumPy array:DeprecationWarning",
+    # myosuite declares float64 Box bounds that gymnasium casts to float32.
+    "ignore:.*precision lowered by casting to float32:UserWarning",
+    # tensorflow-probability (pulled in by sbx) touches deprecated jax.core
+    # attributes at import time; nothing we can patch here.
+    "ignore:jax.core.pytype_aval_mappings is deprecated:DeprecationWarning",
+    "ignore:jax.core.this is deprecated:DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 80
+
+[tool.ty.rules]
