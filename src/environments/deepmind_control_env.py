@@ -8,7 +8,7 @@ from dm_control import suite
 from gymnasium.wrappers import FlattenObservation
 from shimmy.dm_control_compatibility import DmControlCompatibilityV0
 
-from src.environments.base import EnvSpec, register_backend, register_env
+from environments.base import EnvSpec, register_backend, register_env
 
 # dm_control's named-index code sets .shape on numpy arrays, deprecated in numpy 2.5.
 warnings.filterwarnings(

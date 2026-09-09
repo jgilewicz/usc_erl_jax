@@ -1,4 +1,7 @@
 # @package algorithm
+# values shared across sac/td3/crossq/erl match on purpose (controlled
+# comparison); per-algorithm knobs (learning_rate, policy_delay, ...) follow
+# rl-baselines3-zoo's tuned MuJoCo configs / the original papers.
 name: sac
 
 learning_rate: 3e-4
@@ -8,5 +11,7 @@ gamma: 0.99
 tau: 0.005
 train_freq: 1
 gradient_steps: 1
-learning_starts: 25_000
+learning_starts: 10_000
 ent_coef: auto
+# SBX's own MlpPolicy default for SAC; zoo doesn't tune this for MuJoCo
+net_arch: [256, 256]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from omegaconf import OmegaConf
 from sbx import PPO, SAC, TD3, CrossQ
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.noise import NormalActionNoise
@@ -39,6 +40,12 @@ def build_agent(
             train_freq=algo_cfg.train_freq,
             gradient_steps=algo_cfg.gradient_steps,
         )
+    if "net_arch" in algo_cfg:
+        # SBX net_arch is `list[int] | dict[str, list[int]]`; OmegaConf's
+        # ListConfig/DictConfig fail SBX's `isinstance(net_arch, list)`
+        # check, so convert to plain python first.
+        net_arch = OmegaConf.to_container(algo_cfg.net_arch, resolve=True)
+        kwargs["policy_kwargs"] = {"net_arch": net_arch}
 
     if name == "sac":
         return SAC(**kwargs, tau=algo_cfg.tau, ent_coef=algo_cfg.ent_coef)

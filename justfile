@@ -22,9 +22,9 @@ lint-check:
     uv run ruff check .
     uv run ruff format --check .
 
-# static type check on the baselines package
+# static type check on the training entrypoint + baselines package
 types:
-    uv run ty check src/baselines
+    uv run ty check src/train.py src/baselines
 
 # everything: lint-check, types, tests
 check: lint-check types test
@@ -33,13 +33,13 @@ check: lint-check types test
 #   just train sac Hopper-v5
 #   just train crossq Ant-v5 seed=3 total_steps=2_000_000 wandb.enabled=false
 train algo="sac" env="Swimmer-v5" *overrides:
-    uv run python -m src.baselines.train \
+    uv run python -m train \
       algorithm={{algo}} env.id={{env}} eval_env.id={{env}} {{overrides}}
 
 # train every baseline on one env, sequentially
 train-all env="Swimmer-v5" *overrides:
     #!/usr/bin/env bash
     set -euo pipefail
-    for algo in sac ppo td3 crossq; do
+    for algo in sac ppo td3 crossq erl; do
       just train "$algo" "{{env}}" {{overrides}}
     done

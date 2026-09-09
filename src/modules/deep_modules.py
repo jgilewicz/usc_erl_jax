@@ -198,3 +198,55 @@ class AdaptiveBeta(eqx.Module):
     @property
     def beta(self) -> jax.Array:
         return jnp.exp(self.log_beta)
+
+
+class ActorHead(eqx.Module):
+    out_layer: eqx.nn.Linear
+    action_limit: float = eqx.field(static=True)
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        action_dim: int,
+        *,
+        key: jax.Array,
+        action_limit: float = 1.0,
+    ) -> None:
+        self.action_limit = action_limit
+        out = eqx.nn.Linear(embedding_dim, action_dim, key=key)
+        wk, bk = jax.random.split(key)
+        weight = jax.random.uniform(
+            wk, (action_dim, embedding_dim), minval=-3e-3, maxval=3e-3
+        )
+        bias = jax.random.uniform(bk, (action_dim,), minval=-3e-3, maxval=3e-3)
+        self.out_layer = eqx.tree_at(
+            lambda m: (m.weight, m.bias), out, (weight, bias)
+        )
+
+    def __call__(self, z: jax.Array) -> jax.Array:
+        return jnp.tanh(self.out_layer(z)) * self.action_limit
+
+
+class SharedStateEmbedding(eqx.Module):
+    embedding: eqx.nn.Sequential
+
+    def __init__(
+        self,
+        state_dim: int,
+        hidden_dim: int = 400,
+        embedding_dim: int = 4,
+        *,
+        key: jax.Array,
+    ) -> None:
+        k1, k2 = jax.random.split(key)
+        self.embedding = eqx.nn.Sequential(
+            [
+                eqx.nn.Linear(state_dim, hidden_dim, key=k1),
+                eqx.nn.LayerNorm(hidden_dim),
+                eqx.nn.Linear(hidden_dim, embedding_dim, key=k2),
+                eqx.nn.LayerNorm(embedding_dim),
+            ]
+        )
+
+    def __call__(self, state: jax.Array) -> jax.Array:
+        return jnp.tanh(self.embedding(state))

@@ -14,63 +14,93 @@ class Transition(NamedTuple):
     done: jnp.ndarray
 
 
-class BufferState(NamedTuple):
-    state: jnp.ndarray
-    action: jnp.ndarray
-    reward: jnp.ndarray
-    next_state: jnp.ndarray
-    done: jnp.ndarray
-    ptr: jnp.ndarray
-    size: jnp.ndarray
-
-
-def create(capacity: int, state_dim: int, action_dim: int) -> BufferState:
-    return BufferState(
-        state=jnp.zeros((capacity, state_dim), dtype=jnp.float32),
-        action=jnp.zeros((capacity, action_dim), dtype=jnp.float32),
-        reward=jnp.zeros((capacity, 1), dtype=jnp.float32),
-        next_state=jnp.zeros((capacity, state_dim), dtype=jnp.float32),
-        done=jnp.zeros((capacity, 1), dtype=jnp.float32),
-        ptr=jnp.zeros((), dtype=jnp.int32),
-        size=jnp.zeros((), dtype=jnp.int32),
+@jax.jit
+def _scatter(
+    state: jnp.ndarray,
+    action: jnp.ndarray,
+    reward: jnp.ndarray,
+    next_state: jnp.ndarray,
+    done: jnp.ndarray,
+    indices: jnp.ndarray,
+    transition: Transition,
+) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    return (
+        state.at[indices].set(transition.state),
+        action.at[indices].set(transition.action),
+        reward.at[indices].set(transition.reward),
+        next_state.at[indices].set(transition.next_state),
+        done.at[indices].set(transition.done),
     )
 
 
-def add(buffer: BufferState, transition: Transition) -> BufferState:
-    capacity = buffer.state.shape[0]
-    num_envs = transition.state.shape[0]
-    indices = (buffer.ptr + jnp.arange(num_envs)) % capacity
-
-    reward = transition.reward.reshape(num_envs, 1).astype(jnp.float32)
-    done = transition.done.reshape(num_envs, 1).astype(jnp.float32)
-
-    return buffer._replace(
-        state=buffer.state.at[indices].set(
-            transition.state.astype(jnp.float32)
-        ),
-        action=buffer.action.at[indices].set(
-            transition.action.astype(jnp.float32)
-        ),
-        reward=buffer.reward.at[indices].set(reward),
-        next_state=buffer.next_state.at[indices].set(
-            transition.next_state.astype(jnp.float32)
-        ),
-        done=buffer.done.at[indices].set(done),
-        ptr=(buffer.ptr + num_envs) % capacity,
-        size=jnp.minimum(buffer.size + num_envs, capacity),
-    )
-
-
-def sample(
-    buffer: BufferState, rng: jax.Array, batch_size: int
+@jax.jit
+def _gather(
+    state: jnp.ndarray,
+    action: jnp.ndarray,
+    reward: jnp.ndarray,
+    next_state: jnp.ndarray,
+    done: jnp.ndarray,
+    indices: jnp.ndarray,
 ) -> dict[str, jnp.ndarray]:
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be > 0, got {batch_size}")
-    indices = jax.random.randint(rng, (batch_size,), 0, buffer.size)
     return {
-        "state": buffer.state[indices],
-        "action": buffer.action[indices],
-        "reward": buffer.reward[indices],
-        "next_state": buffer.next_state[indices],
-        "done": buffer.done[indices],
+        "state": state[indices],
+        "action": action[indices],
+        "reward": reward[indices],
+        "next_state": next_state[indices],
+        "done": done[indices],
     }
+
+
+class Buffer:
+    def __init__(self, capacity: int, state_dim: int, action_dim: int) -> None:
+        self.capacity = capacity
+        self.state = jnp.zeros((capacity, state_dim), dtype=jnp.float32)
+        self.action = jnp.zeros((capacity, action_dim), dtype=jnp.float32)
+        self.reward = jnp.zeros((capacity, 1), dtype=jnp.float32)
+        self.next_state = jnp.zeros((capacity, state_dim), dtype=jnp.float32)
+        self.done = jnp.zeros((capacity, 1), dtype=jnp.float32)
+        self.ptr = 0
+        self.size = 0
+
+    def add(self, transition: Transition) -> None:
+        num_envs = transition.state.shape[0]
+        indices = (self.ptr + jnp.arange(num_envs)) % self.capacity
+        transition = Transition(
+            state=transition.state.astype(jnp.float32),
+            action=transition.action.astype(jnp.float32),
+            reward=transition.reward.reshape(num_envs, 1).astype(jnp.float32),
+            next_state=transition.next_state.astype(jnp.float32),
+            done=transition.done.reshape(num_envs, 1).astype(jnp.float32),
+        )
+        self.state, self.action, self.reward, self.next_state, self.done = (
+            _scatter(
+                self.state,
+                self.action,
+                self.reward,
+                self.next_state,
+                self.done,
+                indices,
+                transition,
+            )
+        )
+        self.ptr = (self.ptr + num_envs) % self.capacity
+        self.size = min(self.size + num_envs, self.capacity)
+
+    def sample(self, rng: jax.Array, batch_size: int) -> dict[str, jnp.ndarray]:
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be > 0, got {batch_size}")
+        indices = jax.random.randint(rng, (batch_size,), 0, self.size)
+        return self[indices]
+
+    def __getitem__(self, indices: jnp.ndarray) -> dict[str, jnp.ndarray]:
+        return _gather(
+            self.state,
+            self.action,
+            self.reward,
+            self.next_state,
+            self.done,
+            indices,
+        )
+
+    def __len__(self) -> int:
+        return self.size

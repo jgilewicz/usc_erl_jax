@@ -7,7 +7,7 @@ from stable_baselines3.common.vec_env import (
     VecEnv,
 )
 
-from src.environments import get_spec, make_env
+from environments import get_spec, make_env
 
 
 def build_vec_env(name: str, num_envs: int, seed: int) -> VecEnv:

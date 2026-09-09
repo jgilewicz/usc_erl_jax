@@ -1661,7 +1661,7 @@ wheels = [
 [[package]]
 name = "triage-erl"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "dm-control" },
     { name = "equinox" },

@@ -1,15 +1,17 @@
 # @package algorithm
 name: td3
 
-learning_rate: 3e-4
-buffer_size: 200_000
+# original TD3 paper (Fujimoto et al. 2018) + rl-zoo3 MuJoCo defaults
+learning_rate: 1e-3
+buffer_size: 1_000_000
 batch_size: 256
 gamma: 0.99
 tau: 0.005
 train_freq: 1
 gradient_steps: 1
-learning_starts: 25_000
+learning_starts: 10_000
 policy_delay: 2
 target_policy_noise: 0.2
 target_noise_clip: 0.5
 action_noise_std: 0.1
+net_arch: [400, 300] # rl-zoo3 tuned MuJoCo value, matches the TD3 paper

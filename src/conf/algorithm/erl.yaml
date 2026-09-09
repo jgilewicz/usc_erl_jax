@@ -1,0 +1,49 @@
+# @package algorithm
+# gamma/tau/batch_size/buffer_capacity/warmup_steps match sac/td3/crossq
+# for a controlled comparison; actor_lr/critic_lr/policy_noise/noise_clip/
+# policy_freq/exploration_noise mirror td3.yaml since the gradient half of
+# ERL is plain TD3 (see common/td3.py).
+name: erl
+
+# episode length for CEM population fitness + the RL rollout. Measured
+# against the whole registered env suite: exact for MuJoCo (max_episode_
+# steps=1000) and dm_control's default 10s episode (its shimmy wrapper
+# doesn't expose max_episode_steps, so this can't be auto-detected there
+# either way); MyoSuite tasks are shorter (50-1000) so a few generations
+# there run past one episode - wastes some compute, doesn't break anything
+# (collect_parallel_episode's alive-mask still scores only the first
+# episode). Override per-env with horizon=... if that waste matters.
+horizon: 1000
+async_env: true
+
+# population: CEM over ActorHead's flat params, evaluated on Z(s)
+pop_size: 10
+embedding_dim: 256
+sigma_init: 1e-3
+damp: 1e-3
+damp_limit: 1e-5
+elitism: true
+
+# TD3 gradient agent
+critic_hidden_dims: [400, 300]
+gamma: 0.99
+tau: 0.005
+policy_noise: 0.2
+noise_clip: 0.5
+policy_freq: 2
+exploration_noise: 0.1
+actor_lr: 1e-3
+critic_lr: 1e-3
+batch_size: 256
+buffer_capacity: 1_000_000
+warmup_steps: 10_000
+train_ratio: 1.0
+
+# EA <-> RL gene flow (gated until the buffer is past warmup_steps)
+rl_to_ea_sync_period: 1
+ea_tau: 0.5
+
+# population fitness: coin flip per generation (real full-episode return
+# with probability theta, else a cheap h-step critic-bootstrap estimate)
+theta: 0.5
+h_steps: 5

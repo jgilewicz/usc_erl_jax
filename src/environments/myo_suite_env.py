@@ -5,7 +5,7 @@ from typing import Any
 import gymnasium as gym
 import myosuite  # noqa: F401  # import registers the myo* env ids with gymnasium
 
-from src.environments.base import EnvSpec, register_backend, register_env
+from environments.base import EnvSpec, register_backend, register_env
 
 _TASKS = (
     "myoElbowPose1D6MRandom-v0",
