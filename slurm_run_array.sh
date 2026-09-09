@@ -7,9 +7,17 @@
 #   TARGET_ENV=myoLegWalk-v0  sbatch --array=0-24 slurm_run_array.sh
 #
 # Optional: TOTAL_STEPS (default 1_000_000)
+#
+# n_envs (SB3 baselines' vec-env count) is set from SLURM_CPUS_PER_TASK,
+# so it always matches the actual allocation below. ERL ignores n_envs and
+# always runs pop_size+1 workers (11 by default) regardless of -c: that's
+# a mild, fine oversubscription at pop_size=10, but revisit (batch the
+# population instead of 1 process per candidate) before pushing pop_size
+# much higher. Override cores per-submission if a run needs more, e.g.:
+#   TARGET_ENV=Ant-v5 sbatch --array=0-24 --cpus-per-task=16 slurm_run_array.sh
 
 #SBATCH -N 1
-#SBATCH -c 4
+#SBATCH -c 8
 #SBATCH --mem=16gb
 #SBATCH --time=0-12:00:00
 #SBATCH --job-name=erl
@@ -17,12 +25,12 @@
 #SBATCH --gres=gpu:hopper:1
 #SBATCH --output=logs/slurm-%A_%a.out
 #SBATCH --error=logs/slurm-%A_%a.err
-#SBATCH --mail-type=FAIL
 
 set -euo pipefail
 
 ENV="${TARGET_ENV:?set TARGET_ENV, e.g. TARGET_ENV=HalfCheetah-v5}"
 TOTAL_STEPS="${TOTAL_STEPS:-1_000_000}"
+N_ENVS="${SLURM_CPUS_PER_TASK:-8}"
 
 ALGORITHMS=(sac ppo td3 crossq erl)
 SEEDS=(0 1 2 3 4)
@@ -54,6 +62,7 @@ if uv run python -m train \
   env.id="${ENV}" \
   eval_env.id="${ENV}" \
   total_steps="${TOTAL_STEPS}" \
+  n_envs="${N_ENVS}" \
   wandb.enabled=true \
   "wandb.name=${RUN_NAME}" \
   "wandb.tags=[${ALGO},${ENV_SLUG}]" \

@@ -8,6 +8,7 @@ dependencies = [
     "equinox>=0.13.8",
     "flax>=0.12.9",
     "jax>=0.11.1",
+    "jax[cuda12]>=0.11.1; sys_platform == 'linux'",
     "optax>=0.2.8",
     "wandb>=0.29.0",
     "gymnasium[mujoco]==1.2.3",
