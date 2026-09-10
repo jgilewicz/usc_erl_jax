@@ -1,8 +1,9 @@
 set dotenv-load := false
 
-# parallel env workers: match the Slurm CPU allocation when present,
-# else the local core count
+# parallel env workers (SBX baselines): N_ENVS if set, else the Slurm CPU
+# allocation, else the local core count. ERL/SEMARL ignore it.
 n_cpus := `echo "${SLURM_CPUS_PER_TASK:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"`
+n_envs := env_var_or_default("N_ENVS", n_cpus)
 
 # list recipes
 default:
@@ -33,19 +34,19 @@ types:
 # everything: lint-check, types, tests
 check: lint-check types test
 
-# train one SBX baseline
+# train one algorithm; extra tokens are Hydra overrides
 #   just train sac Hopper-v5
-#   just train crossq Ant-v5 seed=3 total_steps=2_000_000 wandb.enabled=false
-#   just train sac Hopper-v5 n_envs=4   # override the detected core count
-train algo="sac" env="Swimmer-v5" n_envs=n_cpus *overrides:
+#   just train semarl Swimmer-v5 total_steps=3_000_000 algorithm.h_beta=6
+#   N_ENVS=4 just train sac Hopper-v5   # override the detected core count
+train algo="sac" env="Swimmer-v5" *overrides:
     uv run python -m train \
       algorithm={{algo}} env.id={{env}} eval_env.id={{env}} \
       n_envs={{n_envs}} {{overrides}}
 
-# train every baseline on one env, sequentially
-train-all env="Swimmer-v5" n_envs=n_cpus *overrides:
+# train every baseline + ERL/SEMARL on one env, sequentially
+train-all env="Swimmer-v5" *overrides:
     #!/usr/bin/env bash
     set -euo pipefail
     for algo in sac ppo td3 crossq erl semarl; do
-      just train "$algo" "{{env}}" n_envs={{n_envs}} {{overrides}}
+      just train "$algo" "{{env}}" {{overrides}}
     done
