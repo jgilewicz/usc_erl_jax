@@ -41,9 +41,7 @@ def build_agent(
             gradient_steps=algo_cfg.gradient_steps,
         )
     if "net_arch" in algo_cfg:
-        # SBX net_arch is `list[int] | dict[str, list[int]]`; OmegaConf's
-        # ListConfig/DictConfig fail SBX's `isinstance(net_arch, list)`
-        # check, so convert to plain python first.
+        # OmegaConf ListConfig/DictConfig fail SBX's isinstance(net_arch, list) check, so convert to plain python.
         net_arch = OmegaConf.to_container(algo_cfg.net_arch, resolve=True)
         kwargs["policy_kwargs"] = {"net_arch": net_arch}
 

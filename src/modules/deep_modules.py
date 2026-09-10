@@ -140,8 +140,7 @@ class EvidentialModule(eqx.Module):
         v = jax.nn.softplus(logv) + self._EPS
         alpha = jax.nn.softplus(logalpha) + 1.0 + self._EPS
         beta = jax.nn.softplus(logbeta) + self._EPS
-        # Clamp mu to a safe range — prevents extreme Q-values from producing
-        # NaN actor gradients that would destabilise the MuJoCo simulation
+        # clamp mu: extreme Q-values produce NaN actor gradients that destabilise the sim
         mu = jnp.clip(mu, -1e4, 1e4)
         return mu, v, alpha, beta
 

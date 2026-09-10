@@ -71,7 +71,6 @@ class CEM:
         self.elite = jnp.sqrt(sigma_init) * jax.random.normal(
             key, (num_params,)
         )
-        self.elite_score = -jnp.inf
 
         weights = jnp.log((self.parents + 1) / jnp.arange(1, self.parents + 1))
 
@@ -103,6 +102,5 @@ class CEM:
             self.num_params,
         )
         self.elite = solutions[elite_idx]
-        self.elite_score = -scores[elite_idx]
 
         return (self.mu, self.cov)

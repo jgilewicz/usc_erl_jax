@@ -52,12 +52,12 @@ class ERLConfig:
     train_ratio: float = 1.0  # gradient steps per env step collected
 
     # EA <-> RL gene flow, both gated until the buffer is past warmup
-    rl_to_ea_sync_period: int = 1
-    ea_tau: float = 0.5
+    rl_to_ea_sync_period: int = 5
+    ea_tau: float = 0.005
 
-    # population fitness: a coin flip per generation, real full-episode
-    theta: float = 0.5
-    h_steps: int = 5
+    # P(real full-episode fitness) per generation, else surrogate; EvoRainbow's inverse P(surrogate)=0.2 default.
+    theta: float = 0.8
+    h_steps: int = 250
 
 
 @eqx.filter_jit
@@ -98,17 +98,23 @@ def _deterministic_action(
 def _surrogate_fitness(
     embedding: SharedStateEmbedding,
     critic1: Critic,
+    critic2: Critic,
     pop_heads: ActorHead,
     h_state: jnp.ndarray,
     h_reward: jnp.ndarray,
     h_done: jnp.ndarray,
     h_steps: int,
     gamma: float,
+    undiscount_scale: float,
 ) -> jnp.ndarray:
     z = jax.vmap(embedding)(h_state)
     own_actions = jax.vmap(lambda head, zi: head(zi))(pop_heads, z)
-    q_bootstrap = jax.vmap(critic1)(h_state, own_actions)[..., 0]
-    return h_step_bootstrap(h_steps, gamma, h_reward, h_done, q_bootstrap)
+    q1 = jax.vmap(critic1)(h_state, own_actions)[..., 0]
+    q2 = jax.vmap(critic2)(h_state, own_actions)[..., 0]
+    q_bootstrap = jnp.minimum(q1, q2)
+    discounted = h_step_bootstrap(h_steps, gamma, h_reward, h_done, q_bootstrap)
+    # rescale the discounted bootstrap onto real_fitness's undiscounted scale; rank-preserving, so CEM selection is unaffected.
+    return discounted * undiscount_scale
 
 
 def _env_dims(
@@ -199,6 +205,8 @@ def train(
     critic_step, actor_step = make_td3_steps(
         td3_cfg, actor_optimizer, critic_optimizer
     )
+    # projects the discounted bootstrap onto real_fitness's undiscounted scale (see _surrogate_fitness).
+    undiscount_scale = horizon * (1.0 - cfg.gamma) / (1.0 - cfg.gamma**horizon)
 
     pending_injection: int | None = None
     try:
@@ -259,12 +267,14 @@ def train(
             surrogate_fitness = _surrogate_fitness(
                 td3_state.online.embedding,
                 td3_state.online.critic1,
+                td3_state.online.critic2,
                 pop_heads,
                 h_state_box[0][:-1],
                 jnp.asarray(h_reward[:-1]),
                 jnp.asarray(h_done[:-1]),
                 cfg.h_steps,
                 cfg.gamma,
+                undiscount_scale,
             )
 
             key, coin_key = jax.random.split(key)

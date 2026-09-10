@@ -6,9 +6,7 @@ import wandb
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import KVWriter
 
-# canonical wandb metric -> SB3 logger keys to try, first present one wins.
-# off-policy algos use train/actor_loss + train/critic_loss; PPO has neither,
-# so its policy- and value-loss stand in.
+# canonical wandb metric -> SB3 logger keys to try, first present wins; PPO's policy/value loss stand in for actor/critic.
 _CANONICAL: dict[str, tuple[str, ...]] = {
     "total_steps": ("time/total_timesteps",),
     "eval_reward": ("eval/mean_reward",),

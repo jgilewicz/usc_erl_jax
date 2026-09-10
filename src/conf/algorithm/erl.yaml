@@ -39,11 +39,22 @@ buffer_capacity: 1_000_000
 warmup_steps: 10_000
 train_ratio: 1.0
 
-# EA <-> RL gene flow (gated until the buffer is past warmup_steps)
-rl_to_ea_sync_period: 1
-ea_tau: 0.5
+# EA <-> RL gene flow (gated until the buffer is past warmup_steps).
+# ea_tau matches the Polyak-averaging scale used for target networks
+# (tau above) rather than a 50% blend every sync; rl_to_ea_sync_period
+# follows the ERL/CERL literature's 3-5 generation range.
+rl_to_ea_sync_period: 5
+ea_tau: 0.005
 
 # population fitness: coin flip per generation (real full-episode return
-# with probability theta, else a cheap h-step critic-bootstrap estimate)
-theta: 0.5
-h_steps: 5
+# with probability theta, else a critic-bootstrap estimate). NB: this
+# theta is P(real), the inverse of EvoRainbow's P(surrogate) convention
+# (github.com/yeshenpy/EvoRainbow default 0.2, i.e. 0.8 here) - only
+# Humanoid tasks flip that to 0.8/0.2 in their config, so override per
+# task accordingly. h_steps costs nothing extra here -
+# collect_parallel_episode always rolls out the full horizon regardless
+# of h_steps, this just reads more of it - so it's set so gamma^h_steps
+# (bootstrap weight) is small (~10%) rather than dominating the
+# surrogate with critic error.
+theta: 0.8
+h_steps: 250
