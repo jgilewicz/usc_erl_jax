@@ -1843,51 +1843,6 @@ wheels = [
 ]
 
 [[package]]
-name = "triage-erl"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "dm-control" },
-    { name = "equinox" },
-    { name = "flax" },
-    { name = "gymnasium", extra = ["mujoco"] },
-    { name = "hydra-core" },
-    { name = "jax" },
-    { name = "jax", extra = ["cuda12"], marker = "sys_platform == 'linux'" },
-    { name = "mujoco" },
-    { name = "myosuite" },
-    { name = "optax" },
-    { name = "sbx-rl" },
-    { name = "shimmy" },
-    { name = "wandb" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "dm-control", specifier = "==1.0.38" },
-    { name = "equinox", specifier = ">=0.13.8" },
-    { name = "flax", specifier = ">=0.12.9" },
-    { name = "gymnasium", extras = ["mujoco"], specifier = "==1.2.3" },
-    { name = "hydra-core", specifier = ">=1.3.6" },
-    { name = "jax", specifier = ">=0.11.1" },
-    { name = "jax", extras = ["cuda12"], marker = "sys_platform == 'linux'", specifier = ">=0.11.1" },
-    { name = "mujoco", specifier = "==3.6.0" },
-    { name = "myosuite", specifier = "==2.12.2" },
-    { name = "optax", specifier = ">=0.2.8" },
-    { name = "sbx-rl", specifier = ">=0.28.0" },
-    { name = "shimmy", specifier = "==2.0.1" },
-    { name = "wandb", specifier = ">=0.29.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.3" }]
-
-[[package]]
 name = "triton"
 version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1927,6 +1882,53 @@ sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087, upload-time = "2026-05-07T16:13:17.151Z" },
 ]
+
+[[package]]
+name = "usc-erl-jax"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "dm-control" },
+    { name = "equinox" },
+    { name = "flax" },
+    { name = "gymnasium", extra = ["mujoco"] },
+    { name = "hydra-core" },
+    { name = "jax" },
+    { name = "jax", extra = ["cuda12"], marker = "sys_platform == 'linux'" },
+    { name = "mujoco" },
+    { name = "myosuite" },
+    { name = "optax" },
+    { name = "sbx-rl" },
+    { name = "scipy" },
+    { name = "shimmy" },
+    { name = "wandb" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "dm-control", specifier = "==1.0.38" },
+    { name = "equinox", specifier = ">=0.13.8" },
+    { name = "flax", specifier = ">=0.12.9" },
+    { name = "gymnasium", extras = ["mujoco"], specifier = "==1.2.3" },
+    { name = "hydra-core", specifier = ">=1.3.6" },
+    { name = "jax", specifier = ">=0.11.1" },
+    { name = "jax", extras = ["cuda12"], marker = "sys_platform == 'linux'", specifier = ">=0.11.1" },
+    { name = "mujoco", specifier = "==3.6.0" },
+    { name = "myosuite", specifier = "==2.12.2" },
+    { name = "optax", specifier = ">=0.2.8" },
+    { name = "sbx-rl", specifier = ">=0.28.0" },
+    { name = "scipy", specifier = ">=1.18.1" },
+    { name = "shimmy", specifier = "==2.0.1" },
+    { name = "wandb", specifier = ">=0.29.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8.3" }]
 
 [[package]]
 name = "uvloop"

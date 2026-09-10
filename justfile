@@ -46,6 +46,6 @@ train algo="sac" env="Swimmer-v5" n_envs=n_cpus *overrides:
 train-all env="Swimmer-v5" n_envs=n_cpus *overrides:
     #!/usr/bin/env bash
     set -euo pipefail
-    for algo in sac ppo td3 crossq erl; do
+    for algo in sac ppo td3 crossq erl semarl; do
       just train "$algo" "{{env}}" n_envs={{n_envs}} {{overrides}}
     done

@@ -1,0 +1,18 @@
+# @package algorithm
+# SEMARL shares every ERL parameter (controlled comparison) and adds the
+# adaptive h-step bootstrap horizon. theta (real/surrogate ratio) and
+# h_steps are inherited from erl.yaml; h_steps is unused here - h_min/h_max
+# replace it.
+defaults:
+  - erl
+  - _self_
+
+name: semarl
+
+# H = round(h_min + (h_max - h_min) * (1 - exp(-h_beta * ema|TD|))), taken
+# from the previous generation's smoothed clipped-double-Q Bellman residual.
+# h_beta must be tuned to the env's Bellman-residual scale.
+h_min: 25
+h_max: 250
+h_beta: 10
+td_ema_decay: 0.1

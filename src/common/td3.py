@@ -180,3 +180,32 @@ def make_td3_steps(
         )
 
     return critic_step, actor_step
+
+
+@eqx.filter_jit
+def clipped_double_q(
+    state: TD3State,
+    batch: dict[str, jnp.ndarray],
+    key: jax.Array,
+    cfg: TD3Config,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    noise = jnp.clip(
+        jax.random.normal(key, batch["action"].shape) * cfg.policy_noise,
+        -cfg.noise_clip,
+        cfg.noise_clip,
+    )
+    z_next = jax.vmap(state.target.embedding)(batch["next_state"])
+    next_action = jnp.clip(
+        jax.vmap(state.target.actor)(z_next) + noise,
+        -cfg.action_limit,
+        cfg.action_limit,
+    )
+    q_next = jnp.minimum(
+        jax.vmap(state.target.critic1)(batch["next_state"], next_action),
+        jax.vmap(state.target.critic2)(batch["next_state"], next_action),
+    )
+    q = jnp.minimum(
+        jax.vmap(state.online.critic1)(batch["state"], batch["action"]),
+        jax.vmap(state.online.critic2)(batch["state"], batch["action"]),
+    )
+    return q, q_next

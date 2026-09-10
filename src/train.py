@@ -12,18 +12,20 @@ from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from algos.erl import ERLConfig
 from algos.erl import evaluate_actor as evaluate_erl_actor
 from algos.erl import train as train_erl
+from algos.semarl import SEMARLConfig
+from algos.semarl import evaluate_actor as evaluate_semarl_actor
+from algos.semarl import train as train_semarl
 from baselines.agents import build_agent
 from baselines.envs import build_vec_env
 from baselines.wandb_logging import WandbLoggingCallback
 
 
-def _run_erl(cfg: DictConfig) -> float:
+def _erl_kwargs(cfg: DictConfig) -> dict[str, Any]:
     algo_cfg = cfg.algorithm
     horizon = int(algo_cfg.horizon)
     pop_size = int(algo_cfg.pop_size)
     generations = max(cfg.total_steps // (horizon * (pop_size + 1)), 1)
-
-    erl_cfg = ERLConfig(
+    return dict(
         env_name=cfg.env.id,
         seed=cfg.seed,
         generations=generations,
@@ -53,8 +55,28 @@ def _run_erl(cfg: DictConfig) -> float:
         theta=algo_cfg.theta,
         h_steps=algo_cfg.h_steps,
     )
-    td3_state = train_erl(erl_cfg, on_generation=wandb.log)
+
+
+def _run_erl(cfg: DictConfig) -> float:
+    td3_state = train_erl(
+        ERLConfig(**_erl_kwargs(cfg)), on_generation=wandb.log
+    )
     return evaluate_erl_actor(
+        cfg.eval_env.id, td3_state, episodes=cfg.eval.episodes
+    )
+
+
+def _run_semarl(cfg: DictConfig) -> float:
+    algo_cfg = cfg.algorithm
+    semarl_cfg = SEMARLConfig(
+        **_erl_kwargs(cfg),
+        h_min=int(algo_cfg.h_min),
+        h_max=int(algo_cfg.h_max),
+        h_beta=algo_cfg.h_beta,
+        td_ema_decay=algo_cfg.td_ema_decay,
+    )
+    td3_state = train_semarl(semarl_cfg, on_generation=wandb.log)
+    return evaluate_semarl_actor(
         cfg.eval_env.id, td3_state, episodes=cfg.eval.episodes
     )
 
@@ -95,9 +117,9 @@ def run_training(cfg: DictConfig) -> float:
         ),
     )
     try:
-        eval_reward = (
-            _run_erl(cfg) if cfg.algorithm.name == "erl" else _run_sb3(cfg)
-        )
+        dispatch = {"erl": _run_erl, "semarl": _run_semarl}
+        runner = dispatch.get(cfg.algorithm.name, _run_sb3)
+        eval_reward = runner(cfg)
     finally:
         run.finish()
 

@@ -43,17 +43,52 @@ evolutionary-RL hybrid. Config: `src/conf/algorithm/erl.yaml`, impl:
 just train erl HalfCheetah-v5
 ```
 
-## SEMARL (placeholder)
+## SEMARL
 
-[SEMARL](https://dl.acm.org/doi/epdf/10.1145/3795095.3805146) — not yet
-implemented.
+[SEMARL](https://dl.acm.org/doi/10.1145/3795095.3805146) — ERL backbone
+(shared embedding, CEM, parallel rollout, genetic soft update) where the
+surrogate's bootstrap horizon `H` adapts to critic error instead of
+ERL's fixed `h_steps`. Real vs surrogate fitness is still the fixed
+`theta` coin flip (0.6, shared with ERL). Impl: `src/algos/semarl.py`,
+config: `src/conf/algorithm/semarl.yaml` (inherits `erl.yaml`).
+
+- **Absolute TD error**: each generation, on a fresh replay batch,
+  `mean |r + γ(1−d)·min(Q1',Q2') − min(Q1,Q2)|` — clipped-double-Q
+  Bellman residual of the current critic (`clipped_double_q`,
+  `absolute_td_error`), smoothed into `td_error_ema` (`td_ema_decay`).
+- **Adaptive H**: `H = round(h_min + (h_max−h_min)·(1−exp(−h_beta·|TD|_ema)))`
+  (`adaptive_h_step`), taken from the previous generation's EMA. Accurate
+  critic (low `|TD|`) → short `H`, lean on the critic bootstrap; noisy
+  critic → `H` grows toward `h_max`, lean on real reward.
+- **Metrics**: `td_error` / `td_error_ema` / `h_step`, plus the surrogate's
+  per-generation agreement with the true full-episode return at three
+  horizons (adaptive `H`, `h_min`, `h_max`) — `surrogate_rank_corr*`
+  (Spearman over the population, scale-free, what CEM selection uses) and
+  `surrogate_abs_err*` (kept only to watch surrogate/real scale drift). The
+  dual-H pair tests whether a short horizon ranks worse when the critic is
+  worse.
+- `h_beta` must be tuned to the env's Bellman-residual scale (Q-values
+  here sit on the undiscounted-return scale).
+- The population rollout still runs the full `horizon` (feeds the buffer),
+  so `H` currently trades surrogate bias/variance, not env steps — the
+  two-call rollout split (RL actor full, population to `H`) is the next
+  step for actual interaction savings.
+
+```bash
+just train semarl HalfCheetah-v5
+# validate the adaptation from a finished run's metrics:
+uv run python scripts/surrogate_diagnostics.py --wandb evo_rl/triage_erl/<run_id>
+```
 
 ## Tooling
 
 - `justfile`: `install`, `test`, `lint`/`lint-check`, `types`, `check`,
   `train`, `train-all`.
+- `scripts/surrogate_diagnostics.py`: post-hoc — does `td_error` predict
+  surrogate inaccuracy, and does a short `H` hurt more when the critic is
+  worse (raw + trend-removed Spearman).
 - `slurm_run_array.sh`: array job, one `(algorithm, seed)` task per
-  index; 5 algos × 5 seeds = 25 tasks for one `TARGET_ENV`.
+  index; 6 algos × 5 seeds = 30 tasks for one `TARGET_ENV`.
 
 ## Full experiment suite on slurm
 
@@ -63,6 +98,6 @@ for env in HalfCheetah-v5 Hopper-v5 Walker2d-v5 Ant-v5 Swimmer-v5 \
            dog-stand dog-walk dog-trot dog-run \
            myoElbowPose1D6MRandom-v0 myoHandReachRandom-v0 \
            myoHandPenTwirlRandom-v0 myoHandObjHoldRandom-v0 myoLegWalk-v0; do
-  TARGET_ENV="$env" sbatch --array=0-24 slurm_run_array.sh
+  TARGET_ENV="$env" sbatch --array=0-29 slurm_run_array.sh
 done
 ```

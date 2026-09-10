@@ -13,3 +13,5 @@ wheels/
 outputs/
 multirun/
 wandb/
+
+notes.md
