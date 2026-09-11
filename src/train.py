@@ -70,9 +70,9 @@ def _run_semarl(cfg: DictConfig) -> float:
     algo_cfg = cfg.algorithm
     semarl_cfg = SEMARLConfig(
         **_erl_kwargs(cfg),
-        h_min=int(algo_cfg.h_min),
-        h_max=int(algo_cfg.h_max),
-        h_beta=algo_cfg.h_beta,
+        p_surr_min=algo_cfg.p_surr_min,
+        p_surr_max=algo_cfg.p_surr_max,
+        p_beta=algo_cfg.p_beta,
         td_ema_decay=algo_cfg.td_ema_decay,
     )
     td3_state = train_semarl(semarl_cfg, on_generation=wandb.log)

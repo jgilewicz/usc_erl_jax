@@ -47,35 +47,59 @@ just train erl HalfCheetah-v5
 
 [SEMARL](https://dl.acm.org/doi/10.1145/3795095.3805146) — ERL backbone
 (shared embedding, CEM, parallel rollout, genetic soft update) where the
-surrogate's bootstrap horizon `H` adapts to critic error instead of
-ERL's fixed `h_steps`. Real vs surrogate fitness is still the fixed
-`theta` coin flip (0.6, shared with ERL). Impl: `src/algos/semarl.py`,
-config: `src/conf/algorithm/semarl.yaml` (inherits `erl.yaml`).
+*frequency* of surrogate evaluation adapts to critic error. The bootstrap
+horizon stays fixed at ERL's `h_steps`; what replaces ERL's fixed `theta`
+coin flip is an adaptive `p_surr`. Impl: `src/algos/semarl.py`, config:
+`src/conf/algorithm/semarl.yaml` (inherits `erl.yaml`).
+
+Earlier versions adapted `H` instead. That was dropped: measured on
+Swimmer, `rank_corr` rose monotonically with `H` (h_max +0.79 vs h_min
++0.27, h_max better in 99% of generations), so there was no critic
+quality at which a short `H` paid — and since the rollout runs the full
+`horizon` either way, a short `H` saved nothing to trade for it.
 
 - **Relative TD error**: each generation, on a fresh replay batch,
   `mean |r + γ(1−d)·min(Q1',Q2') − min(Q1,Q2)|` (`clipped_double_q`,
-  `absolute_td_error`) normalized by `mean|Q|` from the same batch —
-  `|Q|` scales with the env's return magnitude (and, within a run, with
-  policy quality), so the raw residual isn't portable across envs or
-  stable over training; the ratio is. Smoothed into `td_error_rel_ema`
+  `absolute_td_error`) normalized by `mean|r|` from the same batch
+  (`relative_td_error`). `|TD|` is a per-step residual, so the
+  denominator has to be per-step too — `mean|Q|` is a discounted *return*,
+  which buries a factor of `(1−γ)` in the ratio and shrinks it further as
+  `Q` grows over training. Smoothed into `td_error_rel_ema`
   (`td_ema_decay`).
-- **Adaptive H**: `H = round(h_min + (h_max−h_min)·(1−exp(−h_beta·|TD|_rel_ema)))`
-  (`adaptive_h_step`), taken from the previous generation's EMA. Accurate
-  critic (low relative `|TD|`) → short `H`, lean on the critic bootstrap;
-  noisy critic → `H` grows toward `h_max`, lean on real reward.
+- **Adaptive p_surr**:
+  `p_surr = p_surr_min + (p_surr_max−p_surr_min)·exp(−p_beta·|TD|_rel_ema)`
+  (`adaptive_p_surr`), taken from the previous generation's EMA — the
+  choice has to precede collection so it can gate the rollout once the
+  population rollout is truncated. Accurate critic → more surrogate
+  generations; noisy critic → fall back to real evaluation.
 - **Metrics**: `td_error` (raw, informational) / `td_error_rel` /
-  `td_error_rel_ema` / `h_step`, plus the surrogate's per-generation
-  agreement with the true full-episode return at three horizons (adaptive
-  `H`, `h_min`, `h_max`) — `surrogate_rank_corr*` (Spearman over the
-  population, scale-free, what CEM selection uses) and `surrogate_abs_err*`
-  (kept only to watch surrogate/real scale drift). The dual-H pair tests
-  whether a short horizon ranks worse when the critic is worse.
-- `h_beta` is a dimensionless sensitivity constant on the relative error,
+  `td_error_rel_ema` / `p_surr`, plus the surrogate's per-generation
+  agreement with the true full-episode return at two horizons — the
+  `h_steps` bootstrap in use and `H=0` (pure critic value, the
+  SEMARL-style surrogate, carried as the baseline arm of the
+  cost/accuracy curve):
+  - `surrogate_elite_overlap*` — fraction of CEM's top-`parents` set the
+    surrogate gets right. The headline number: `_cem_tell` keeps
+    `argsort(-scores)[:parents]` and discards everything else, so this is
+    all selection consumes. Chance is 0.5, not 0.
+  - `surrogate_rank_corr*` — Spearman over the whole population; looser,
+    also scores pairs selection never looks at.
+  - `surrogate_abs_err*` — kept only to watch surrogate/real scale drift.
+  - `q_disagree_mean` / `q_disagree_rank_corr` — per-individual
+    `|Q1−Q2|` at the surrogate's own bootstrap states, and its
+    correlation with how far that individual is misranked. Logged but
+    unused: it is the candidate gating signal for uncertainty-gated
+    `p_surr`, and this says whether it carries anything before it is
+    wired in.
+- `p_beta` is a dimensionless sensitivity constant on the relative error,
   meant to be shared across envs (unlike a raw-`|TD|` threshold).
+- `theta` and `h_steps` are inherited from `ERLConfig`; SEMARL uses
+  `h_steps` as its fixed horizon and ignores `theta` (`p_surr` replaces
+  it), so a SEMARL run's logged `theta` is inert.
 - The population rollout still runs the full `horizon` (feeds the buffer),
-  so `H` currently trades surrogate bias/variance, not env steps — the
-  two-call rollout split (RL actor full, population to `H`) is the next
-  step for actual interaction savings.
+  so `p_surr` currently trades surrogate bias/variance, not env steps —
+  the two-call rollout split (RL actor full, population to `h_steps` on
+  surrogate generations) is the next step for actual interaction savings.
 
 ```bash
 just train semarl HalfCheetah-v5
@@ -88,9 +112,11 @@ uv run python scripts/surrogate_diagnostics.py --wandb evo_rl/triage_erl/<run_id
 - `justfile`: `install`, `test`, `lint`/`lint-check`, `types`, `check`,
   `train`, `train-all`.
 - `scripts/surrogate_diagnostics.py`: post-hoc — does relative `|TD|`
-  predict a worse-ranking surrogate, and does a short `H` rank worse when
-  the critic is worse (raw + trend-removed Spearman); flags a saturated
-  `h_step` (constant across the run, usually an `h_beta`/TD-scale mismatch).
+  predict a worse surrogate, does `p_surr` open when the surrogate is
+  good, how the `H` and `H=0` arms compare, and whether `|Q1−Q2|` flags
+  the misranked individuals (raw + trend-removed Spearman); flags a
+  saturated `p_surr` — constant, *or* pinned against a rail, which is the
+  same non-result and easy to miss in the range alone.
 - `slurm_run_array.sh`: array job, one `(algorithm, seed)` task per
   index; 6 algos × 5 seeds = 30 tasks for one `TARGET_ENV`.
 

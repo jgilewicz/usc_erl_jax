@@ -28,6 +28,11 @@ def h_step_bootstrap(
     dones: jax.Array,
     q_value: jax.Array,
 ) -> jax.Array:
+    # h_steps=0 is the pure-critic surrogate: no real reward, and nothing has
+    # terminated yet, so the bootstrap is unmasked. Guarded because the
+    # general path indexes survived[..., -1], which has no last element here.
+    if h_steps == 0:
+        return q_value
     survived = jnp.cumprod(1.0 - dones, axis=-1)
     alive_mask = jnp.concatenate(
         [jnp.ones_like(survived[..., :1]), survived[..., :-1]], axis=-1
@@ -52,8 +57,12 @@ def absolute_td_error(
     return jnp.abs(reward + gamma * (1 - dones) * q_prim - q).mean()
 
 
-def adaptive_h_step(
-    h_min: int, h_max: int, beta: float, abs_td_error: float
-) -> int:
-    frac = 1.0 - math.exp(-beta * abs_td_error)
-    return int(round(h_min + (h_max - h_min) * frac))
+def relative_td_error(abs_td_error: float, reward_scale: float) -> float:
+    return abs_td_error / (reward_scale + 1e-6)
+
+
+def adaptive_p_surr(
+    p_min: float, p_max: float, beta: float, rel_td_error: float
+) -> float:
+    # accurate critic (low relative residual) -> lean on the surrogate.
+    return p_min + (p_max - p_min) * math.exp(-beta * rel_td_error)

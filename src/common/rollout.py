@@ -10,8 +10,10 @@ import numpy as np
 from common.replay_buffer import Buffer, Transition
 
 BatchPolicy = Callable[[jax.Array, jnp.ndarray], jnp.ndarray]
+# (step, states, reward, terminated, truncated, next_states)
 StepHook = Callable[
-    [int, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], None
+    [int, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray],
+    None,
 ]
 
 
@@ -54,7 +56,7 @@ def collect_parallel_episode(
             returns, alive, reward, terminated, truncated
         )
         if on_step is not None:
-            on_step(step, reward, terminated, truncated, next_states)
+            on_step(step, states, reward, terminated, truncated, next_states)
 
         valid = ~prev_done
         if valid.any():

@@ -243,6 +243,7 @@ def train(
 
             def capture_h_step(
                 step: int,
+                states: jnp.ndarray,
                 reward: jnp.ndarray,
                 terminated: jnp.ndarray,
                 truncated: jnp.ndarray,

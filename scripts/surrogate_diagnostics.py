@@ -1,24 +1,22 @@
-"""Post-hoc validation of SEMARL's adaptive-H mechanism.
+"""Post-hoc validation of SEMARL's adaptive-p_surr mechanism.
 
-Reads a run's per-generation metrics (wandb run or exported CSV) and asks,
-using the surrogate's *rank* correlation with the true return (scale-free -
-what CEM selection depends on, and it survives the surrogate/real
-return-scale mismatch):
+Reads a run's per-generation metrics (wandb run or exported CSV). The
+headline metric is *elite overlap* - the fraction of CEM's top-`parents`
+set that the surrogate gets right - because that is all `_cem_tell`
+consumes; rank correlation also scores pairs selection never looks at.
 
-  1. Does |TD|_rel predict a worse-ranking surrogate?
-     corr(td_error_rel, rank_corr at a fixed horizon)      -- expect negative
-  2. Premise - does a short horizon rank worse when the critic is worse?
-     corr(td_error_rel, rank_corr_hmin - rank_corr_hmax)   -- expect negative
+  1. Does |TD|_rel predict a worse surrogate?
+     corr(td_error_rel, elite_overlap)          -- expect negative
+  2. Does the gate move, and does it move the right way?
+     p_surr spread, and corr(p_surr, elite_overlap) -- expect positive
+  3. Baseline arm: h-step bootstrap (H) vs pure critic value (H=0).
+     If H=0 overlap is near chance, a SEMARL-style critic surrogate
+     cannot drive CEM here whatever gates it.
+  4. Does per-individual critic disagreement flag the misranked ones?
+     mean corr(|Q1-Q2|, rank displacement)      -- expect positive
 
-Uses td_error_rel (|TD| / mean|Q|) when the run logged it, else falls back
-to the raw td_error (older runs) with a warning - the raw residual scales
-with |Q|, which grows both across envs and within a run as returns grow, so
-it is not the quantity adaptive_h_step's h_beta was calibrated against.
-
-Also flags a saturated h_step (no variance = the run never actually
-adapted, usually because h_beta didn't match this run's TD-error scale) -
-that alone invalidates the correlations below, since there is nothing for
-them to be measured against.
+|TD|_rel is |TD| / mean|r|: both per-step reward-scale quantities, so the
+ratio is portable across envs and doesn't drift as returns grow.
 
 Reported raw and detrended: the TD signal and surrogate quality both move
 over training, and that shared trend alone inflates a raw correlation.
@@ -35,21 +33,24 @@ import csv as csvmod
 from pathlib import Path
 
 import numpy as np
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, wilcoxon
 
 COLUMNS = [
     "generation",
     "td_error",
     "td_error_rel",
     "td_error_rel_ema",
+    "p_surr",
     "h_step",
     "fitness_is_real",
     "surrogate_abs_err",
-    "surrogate_abs_err_hmin",
-    "surrogate_abs_err_hmax",
+    "surrogate_abs_err_h0",
     "surrogate_rank_corr",
-    "surrogate_rank_corr_hmin",
-    "surrogate_rank_corr_hmax",
+    "surrogate_rank_corr_h0",
+    "surrogate_elite_overlap",
+    "surrogate_elite_overlap_h0",
+    "q_disagree_mean",
+    "q_disagree_rank_corr",
 ]
 
 
@@ -94,7 +95,7 @@ def _from_wandb(spec: str) -> dict[str, np.ndarray]:
             ) from None
         run = matches[0]
     # no keys= filter: scan_history drops every row when any requested key
-    # was never logged (e.g. rank_corr on an older run).
+    # was never logged (e.g. elite_overlap on an older run).
     hist = [row for row in run.scan_history() if "generation" in row]
     if not hist:
         raise ValueError(f"run {run.id} has no per-generation history")
@@ -125,14 +126,18 @@ def _report(label: str, x: np.ndarray, y: np.ndarray, window: int) -> None:
     mask = np.isfinite(x) & np.isfinite(y)
     x, y = x[mask], y[mask]
     if len(x) < 5:
-        print(f"{label:<40} n={len(x):4d}  (too few points)")
+        print(f"{label:<44} n={len(x):4d}  (too few points)")
         return
     r_raw, p_raw = spearmanr(x, y)
-    r_det, p_det = spearmanr(_detrend(x, window), _detrend(y, window))
+    xd, yd = _detrend(x, window), _detrend(y, window)
+    if np.ptp(xd) == 0 or np.ptp(yd) == 0:
+        det = "detrended n/a (constant within window)"
+    else:
+        r_det, p_det = spearmanr(xd, yd)
+        det = f"detrended rho={r_det:+.3f} (p={p_det:.1e})"
     print(
-        f"{label:<40} n={len(x):4d}  "
-        f"raw rho={r_raw:+.3f} (p={p_raw:.1e})   "
-        f"detrended rho={r_det:+.3f} (p={p_det:.1e})"
+        f"{label:<44} n={len(x):4d}  "
+        f"raw rho={r_raw:+.3f} (p={p_raw:.1e})   {det}"
     )
 
 
@@ -144,6 +149,67 @@ def _rolling_spearman(x: np.ndarray, y: np.ndarray, window: int) -> np.ndarray:
         if m.sum() >= 5:
             out[i + window // 2] = spearmanr(xi[m], yi[m])[0]
     return out
+
+
+def _describe_gate(p: np.ndarray) -> None:
+    valid = p[np.isfinite(p)]
+    if not len(valid):
+        print("!! no p_surr logged - run predates the adaptive gate")
+        return
+    span = f"p_surr: [{valid.min():.3f}, {valid.max():.3f}] mean={valid.mean():.3f}"
+    if np.ptp(valid) < 1e-3:
+        print(
+            f"!! p_surr is constant ({valid[0]:.3f}) for every generation "
+            "-- the gate never adapted, so Q1/Q2 below measure nothing. "
+            "Usually p_beta doesn't match this run's |TD|_rel scale."
+        )
+    elif valid.mean() < 0.05 or valid.mean() > 0.95:
+        # a gate that technically moves but sits against a rail is the same
+        # non-result as a constant one, and is easy to miss in the range.
+        print(
+            f"!! {span}\n   the gate moves but is pinned against a rail -- "
+            "retune p_beta against this run's |TD|_rel before reading Q1/Q2."
+        )
+    else:
+        print(span)
+
+
+def _compare_arms(d: dict[str, np.ndarray]) -> None:
+    # CEM keeps parents = pop_size // 2, so two unrelated rankings already
+    # share half their elite set: 0.5 is chance, not 0.
+    print(
+        "\nQ3  h-step bootstrap (H) vs pure critic value (H=0)"
+        "   [elite_overlap chance = 0.5]"
+    )
+    for label, key in (
+        ("elite_overlap", "surrogate_elite_overlap"),
+        ("rank_corr", "surrogate_rank_corr"),
+        ("abs_err", "surrogate_abs_err"),
+    ):
+        at_h, at_0 = d[key], d[f"{key}_h0"]
+        if not np.isfinite(at_0).any():
+            print(f"  {label:<16} (no H=0 arm logged)")
+            continue
+        print(
+            f"  {label:<16} H={np.nanmean(at_h):+.3f}   "
+            f"H=0={np.nanmean(at_0):+.3f}"
+        )
+
+
+def _report_disagreement(rc: np.ndarray) -> None:
+    print("\nQ4  does |Q1-Q2| flag the misranked individuals? (expect > 0)")
+    valid = rc[np.isfinite(rc)]
+    if len(valid) < 5:
+        print("  (no q_disagree_rank_corr logged)")
+        return
+    # per-generation rho over only pop_size individuals is very noisy; the
+    # signed-rank test over generations is what carries the evidence.
+    stat = wilcoxon(valid, alternative="greater")
+    print(
+        f"  mean per-gen rho={valid.mean():+.3f}  "
+        f"(>0 in {np.mean(valid > 0):.0%} of {len(valid)} gens, "
+        f"wilcoxon p={stat.pvalue:.1e})"
+    )
 
 
 def main() -> None:
@@ -176,89 +242,35 @@ def main() -> None:
         keep &= d["fitness_is_real"] > 0.5
     d = {k: v[keep] for k, v in d.items()}
     print(f"{int(keep.sum())} generations after filtering")
+    _describe_gate(d["p_surr"])
 
-    h = d["h_step"]
-    h_valid = h[np.isfinite(h)]
-    if len(h_valid) and h_valid.max() - h_valid.min() < 1:
-        print(
-            f"\n!! h_step is constant ({h_valid[0]:.0f}) for every generation "
-            "-- H never adapted, so nothing below is measuring what it "
-            "claims to. Usually h_beta doesn't match this run's TD-error "
-            "scale (all-real-eval or a saturated sigmoid); fix that and "
-            "re-run before trusting the correlations."
+    td = d["td_error_rel"]
+    overlap = d["surrogate_elite_overlap"]
+    if not np.isfinite(overlap).any():
+        raise ValueError(
+            "run logged no surrogate_elite_overlap - it predates the "
+            "adaptive-p_surr rewrite; re-run before analysing"
         )
-    else:
-        print(f"h_step range: [{h_valid.min():.0f}, {h_valid.max():.0f}]")
 
-    if np.isfinite(d["td_error_rel"]).any():
-        td = d["td_error_rel"]
-        td_label = "|TD|_rel"
-    else:
-        print(
-            "\n(no td_error_rel - older run; falling back to raw td_error, "
-            "which is not comparable across envs/training progress)"
-        )
-        td = d["td_error"]
-        td_label = "|TD|"
-    print()
-
-    rc_min = d["surrogate_rank_corr_hmin"]
-    rc_max = d["surrogate_rank_corr_hmax"]
-    rc_adapt = d["surrogate_rank_corr"]
-    rc_gap = rc_min - rc_max
-    has_rc = np.isfinite(rc_max).any()
-
-    if has_rc:
-        print(
-            f"Q1  does {td_label} predict a worse-ranking surrogate? (expect < 0)"
-        )
-        _report(f"  {td_label} vs rank_corr(H=h_min)", td, rc_min, args.window)
-        _report(f"  {td_label} vs rank_corr(H=h_max)", td, rc_max, args.window)
-        print(
-            "\nQ2  premise: short H ranks worse when critic worse (expect < 0)"
-        )
-        _report(
-            f"  {td_label} vs (rank_corr_hmin - rank_corr_hmax)",
-            td,
-            rc_gap,
-            args.window,
-        )
-        print("\nsecondary (confounded by compensation / lag)")
-        _report(
-            "  h_step vs rank_corr(adaptive H)",
-            d["h_step"],
-            rc_adapt,
-            args.window,
-        )
-        print(
-            f"\nmean rank_corr: h_min={np.nanmean(rc_min):+.3f}  "
-            f"adaptive={np.nanmean(rc_adapt):+.3f}  "
-            f"h_max={np.nanmean(rc_max):+.3f}"
-        )
-    else:
-        print("(no rank_corr columns - run predates them; abs_err only)\n")
-
-    err_min = d["surrogate_abs_err_hmin"]
-    err_max = d["surrogate_abs_err_hmax"]
-    print("\nabs_err (scale-sensitive, watch surrogate/real scale drift)")
+    print("\nQ1  does |TD|_rel predict a worse surrogate? (expect < 0)")
+    _report("  |TD|_rel vs elite_overlap", td, overlap, args.window)
     _report(
-        f"  {td_label} vs (err_hmin - err_hmax)",
-        td,
-        err_min - err_max,
-        args.window,
+        "  |TD|_rel vs rank_corr", td, d["surrogate_rank_corr"], args.window
     )
-    frac = float(np.nanmean((err_min < err_max).astype(float)))
-    print(
-        f"  err_hmin < err_hmax in {frac:.0%} of gens  "
-        f"(mean err_hmin={np.nanmean(err_min):.2f}, "
-        f"err_hmax={np.nanmean(err_max):.2f})"
-    )
+
+    print("\nQ2  does the gate open when the surrogate is good? (expect > 0)")
+    _report("  p_surr vs elite_overlap", d["p_surr"], overlap, args.window)
+
+    _compare_arms(d)
+    _report_disagreement(d["q_disagree_rank_corr"])
 
     if args.out:
         series = {
             "generation": d["generation"],
-            "roll_sp_td_rc_max": _rolling_spearman(td, rc_max, args.window),
-            "roll_sp_td_rc_gap": _rolling_spearman(td, rc_gap, args.window),
+            "roll_sp_td_overlap": _rolling_spearman(td, overlap, args.window),
+            "roll_sp_p_overlap": _rolling_spearman(
+                d["p_surr"], overlap, args.window
+            ),
         }
         with args.out.open("w", newline="") as fh:
             w = csvmod.writer(fh)

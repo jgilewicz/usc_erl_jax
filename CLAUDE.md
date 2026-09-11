@@ -15,7 +15,7 @@ Extends the global CLAUDE.md. Project-specific deltas only.
 src/
   train.py           # single Hydra entrypoint, baselines + ERL
   algos/erl.py        # ERL (EvoRainbow) training loop
-  algos/semarl.py     # SEMARL: ERL + h-step bootstrap horizon adapted to critic TD error
+  algos/semarl.py     # SEMARL: ERL + surrogate-evaluation frequency (p_surr) adapted to critic TD error
   baselines/          # SBX agent construction, vec-env wrapping, wandb callback
   common/             # replay buffer, rollout collection, TD3 core, EA/RL glue utils
   modules/             # equinox nn modules (Actor, Critic, SharedStateEmbedding, ActorHead) + CEM
@@ -35,7 +35,19 @@ scripts/               # post-hoc analysis, not shipped in the wheel
   `register_backend` — never `gym.register` directly in algo code.
 - ERL and SEMARL are separate files but share params: `semarl.yaml`
   composes `erl.yaml` via `defaults`, `_run_semarl` reuses `_erl_kwargs`.
-  `SEMARLConfig` subclasses `ERLConfig` (adds `h_min/h_max/h_beta/td_ema_decay`).
+  `SEMARLConfig` subclasses `ERLConfig` (adds
+  `p_surr_min/p_surr_max/p_beta/td_ema_decay`). SEMARL fixes the bootstrap
+  horizon at the inherited `h_steps` and ignores the inherited `theta` —
+  `p_surr` replaces it.
+- Surrogate quality is judged by `surrogate_elite_overlap` (CEM keeps
+  `argsort(-scores)[:parents]` and drops the rest of the ordering, so
+  elite membership is all selection consumes; chance is 0.5). Rank
+  correlation is the looser secondary view, `abs_err` only watches scale
+  drift.
+- `collect_parallel_episode`'s `on_step` hook takes
+  `(step, states, reward, terminated, truncated, next_states)` — `states`
+  is there so an `H=0` bootstrap can be scored at the episode's first
+  state.
 
 ## Slurm
 

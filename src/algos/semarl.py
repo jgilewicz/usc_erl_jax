@@ -23,9 +23,10 @@ from common.td3 import (
 )
 from common.utils import (
     absolute_td_error,
-    adaptive_h_step,
+    adaptive_p_surr,
     genetic_soft_update,
     h_step_bootstrap,
+    relative_td_error,
 )
 from modules.deep_modules import ActorHead, Critic, SharedStateEmbedding
 from modules.evo_module import CEM
@@ -34,17 +35,10 @@ from algos.erl import ERLConfig
 
 @dataclass(frozen=True)
 class SEMARLConfig(ERLConfig):
-    # h-step bootstrap horizon adapts to critic error instead of ERL's fixed
-    # h_steps: H = h_min + (h_max - h_min) * (1 - exp(-h_beta * ema|TD|_rel)).
-    # |TD|_rel = |TD| / mean|Q| (relative Bellman residual) rather than the
-    # raw |TD|: |Q| scales with the env's return magnitude (and, within a
-    # run, with policy quality), so the raw residual isn't portable across
-    # envs or stable over training. h_beta is a dimensionless sensitivity
-    # constant on that ratio, meant to be shared across envs.
-    # theta (from ERLConfig) still gates real vs surrogate fitness.
-    h_min: int = 25
-    h_max: int = 250
-    h_beta: float = 10.0
+    # The bootstrap horizon is fixed at ERL's h_steps
+    p_surr_min: float = 0.0
+    p_surr_max: float = 0.9
+    p_beta: float = 3.0
     td_ema_decay: float = 0.1
 
 
@@ -105,16 +99,42 @@ def _surrogate_fitness(
     return discounted * undiscount_scale
 
 
+@eqx.filter_jit
+def _critic_disagreement(
+    embedding: SharedStateEmbedding,
+    critic1: Critic,
+    critic2: Critic,
+    pop_heads: ActorHead,
+    states: jnp.ndarray,
+) -> jnp.ndarray:
+    # |Q1 - Q2| at the surrogate's own bootstrap query points, per individual:
+    # a free epistemic proxy that |TD| (global, on buffer actions) can't give.
+    z = jax.vmap(embedding)(states)
+    own_actions = jax.vmap(lambda head, zi: head(zi))(pop_heads, z)
+    q1 = jax.vmap(critic1)(states, own_actions)[..., 0]
+    q2 = jax.vmap(critic2)(states, own_actions)[..., 0]
+    return jnp.abs(q1 - q2)
+
+
+def _ranks(x: jnp.ndarray) -> np.ndarray:
+    return np.argsort(np.argsort(np.asarray(x)))
+
+
 def _rank_corr(a: jnp.ndarray, b: jnp.ndarray) -> float:
-    # Spearman between two population-length fitness vectors. Scale-free, so
-    # it survives the surrogate/real return-scale mismatch that |f - f| does
-    # not - and rank is what CEM selection actually uses.
-    x, y = np.asarray(a), np.asarray(b)
-    if len(x) < 3:
+    # Spearman between two population-length fitness vectors.
+    if len(np.asarray(a)) < 3:
         return float("nan")
-    rx = np.argsort(np.argsort(x))
-    ry = np.argsort(np.argsort(y))
-    return float(np.corrcoef(rx, ry)[0, 1])
+    return float(np.corrcoef(_ranks(a), _ranks(b))[0, 1])
+
+
+def _elite_overlap(a: jnp.ndarray, b: jnp.ndarray, parents: int) -> float:
+    # What CEM actually consume: the fraction of the top `parents` individuals that are shared between two population-length fitness vectors.
+    x, y = np.asarray(a), np.asarray(b)
+    if len(x) < parents:
+        return float("nan")
+    top_a = set(np.argsort(-x)[:parents].tolist())
+    top_b = set(np.argsort(-y)[:parents].tolist())
+    return len(top_a & top_b) / parents
 
 
 def _env_dims(
@@ -156,12 +176,15 @@ def train(
     obs_dim, action_dim, action_limit, horizon = _env_dims(
         cfg.env_name, cfg.horizon
     )
-    if not 1 <= cfg.h_min <= cfg.h_max:
+    if cfg.h_steps > horizon:
         raise ValueError(
-            f"need 1 <= h_min ({cfg.h_min}) <= h_max ({cfg.h_max})"
+            f"h_steps ({cfg.h_steps}) must be <= horizon ({horizon})"
         )
-    if cfg.h_max > horizon:
-        raise ValueError(f"h_max ({cfg.h_max}) must be <= horizon ({horizon})")
+    if not 0.0 <= cfg.p_surr_min <= cfg.p_surr_max <= 1.0:
+        raise ValueError(
+            f"need 0 <= p_surr_min ({cfg.p_surr_min}) <= p_surr_max "
+            f"({cfg.p_surr_max}) <= 1"
+        )
     vec_env = environments.make_vec_env(
         cfg.env_name, cfg.pop_size + 1, async_=cfg.async_env, to_jax=True
     )
@@ -222,13 +245,15 @@ def train(
             pop_heads = jax.vmap(unravel_head)(flat_pop)
 
             warmup = len(buffer) < cfg.warmup_steps
-            h_t = (
-                cfg.h_max
-                if td_rel_ema is None
-                else adaptive_h_step(
-                    cfg.h_min, cfg.h_max, cfg.h_beta, td_rel_ema
+            p_surr = (
+                0.0
+                if warmup or td_rel_ema is None
+                else adaptive_p_surr(
+                    cfg.p_surr_min, cfg.p_surr_max, cfg.p_beta, td_rel_ema
                 )
             )
+            key, coin_key = jax.random.split(key)
+            use_real_fitness = not bool(jax.random.bernoulli(coin_key, p_surr))
 
             def policy(
                 act_key: jax.Array,
@@ -247,16 +272,14 @@ def train(
                     warmup,
                 )
 
-            # capture the widest window (h_max) and snapshot the bootstrap
-            # state at each horizon we score: the adaptive h_t plus h_min /
-            # h_max for the dual-H diagnostic.
-            snap_steps = sorted({cfg.h_min, h_t, cfg.h_max})
-            h_reward = np.zeros((cfg.pop_size + 1, cfg.h_max), np.float32)
-            h_done = np.zeros((cfg.pop_size + 1, cfg.h_max), np.float32)
+            # snapshot the bootstrap state at h_steps
+            h_reward = np.zeros((cfg.pop_size + 1, cfg.h_steps), np.float32)
+            h_done = np.zeros((cfg.pop_size + 1, cfg.h_steps), np.float32)
             h_states: dict[int, jnp.ndarray] = {}
 
             def capture_h_step(
                 step: int,
+                states: jnp.ndarray,
                 reward: jnp.ndarray,
                 terminated: jnp.ndarray,
                 truncated: jnp.ndarray,
@@ -264,14 +287,15 @@ def train(
                 h_reward: np.ndarray = h_reward,
                 h_done: np.ndarray = h_done,
                 h_states: dict[int, jnp.ndarray] = h_states,
-                snap_steps: list[int] = snap_steps,
             ) -> None:
-                if step >= cfg.h_max:
+                if step == 0:
+                    h_states[0] = states
+                if step >= cfg.h_steps:
                     return
                 h_reward[:, step] = np.asarray(reward)
                 h_done[:, step] = np.asarray(terminated)
-                if step + 1 in snap_steps:
-                    h_states[step + 1] = next_states
+                if step + 1 == cfg.h_steps:
+                    h_states[cfg.h_steps] = next_states
 
             returns, key = collect_parallel_episode(
                 vec_env, key, policy, buffer, horizon, on_step=capture_h_step
@@ -279,7 +303,6 @@ def train(
             real_fitness = returns[:-1]
             rl_return = float(returns[-1])
 
-            key, coin_key = jax.random.split(key)
             if warmup:
                 td_error = 0.0
                 td_error_rel = 0.0
@@ -298,19 +321,15 @@ def train(
                         td_batch["done"],
                     )
                 )
-                # |Q| grows with the return scale
-                q_scale = float(jnp.mean(jnp.abs(q))) + 1e-6
-                td_error_rel = td_error / q_scale
+                td_error_rel = relative_td_error(
+                    td_error, float(jnp.mean(jnp.abs(td_batch["reward"])))
+                )
                 td_rel_ema = (
                     td_error_rel
                     if td_rel_ema is None
                     else (1.0 - cfg.td_ema_decay) * td_rel_ema
                     + cfg.td_ema_decay * td_error_rel
                 )
-
-            use_real_fitness = warmup or bool(
-                jax.random.bernoulli(coin_key, cfg.theta)
-            )
 
             def surrogate_at(
                 h: int, pop_heads: ActorHead = pop_heads
@@ -328,30 +347,36 @@ def train(
                     undiscount_scale,
                 )
 
-            surrogate_fitness = surrogate_at(h_t)
+            surrogate_fitness = surrogate_at(cfg.h_steps)
             fitness = real_fitness if use_real_fitness else surrogate_fitness
 
             # real_fitness is the true full-episode return every generation
-            # (rollout always runs the full horizon), so surrogate quality is
-            # measurable for free. rank_corr is the signal that matters (CEM
-            # selects by rank, and it survives the surrogate/real scale gap);
-            # abs_err is kept only to watch that scale gap. Dual-H (h_min vs
-            # h_max) tests whether a short horizon ranks worse when the critic
-            # is less accurate.
-            s_min = surrogate_at(cfg.h_min)
-            s_max = surrogate_at(cfg.h_max)
+            s_h0 = surrogate_at(0)
             surrogate_abs_err = float(
                 jnp.mean(jnp.abs(real_fitness - surrogate_fitness))
             )
-            surrogate_abs_err_hmin = float(
-                jnp.mean(jnp.abs(real_fitness - s_min))
-            )
-            surrogate_abs_err_hmax = float(
-                jnp.mean(jnp.abs(real_fitness - s_max))
-            )
+            surrogate_abs_err_h0 = float(jnp.mean(jnp.abs(real_fitness - s_h0)))
             surrogate_rank_corr = _rank_corr(real_fitness, surrogate_fitness)
-            surrogate_rank_corr_hmin = _rank_corr(real_fitness, s_min)
-            surrogate_rank_corr_hmax = _rank_corr(real_fitness, s_max)
+            surrogate_rank_corr_h0 = _rank_corr(real_fitness, s_h0)
+            elite_overlap = _elite_overlap(
+                real_fitness, surrogate_fitness, cem.parents
+            )
+            elite_overlap_h0 = _elite_overlap(real_fitness, s_h0, cem.parents)
+
+            # does per-individual critic disagreement flag
+            q_disagree = _critic_disagreement(
+                td3_state.online.embedding,
+                td3_state.online.critic1,
+                td3_state.online.critic2,
+                pop_heads,
+                h_states[cfg.h_steps][:-1],
+            )
+            rank_shift = np.abs(
+                _ranks(real_fitness) - _ranks(surrogate_fitness)
+            ).astype(float)
+            q_disagree_rank_corr = _rank_corr(
+                q_disagree, jnp.asarray(rank_shift)
+            )
 
             cem.tell(fitness, flat_pop)
             pending_injection = None
@@ -396,13 +421,16 @@ def train(
                 "td_error_rel_ema": td_rel_ema
                 if td_rel_ema is not None
                 else 0.0,
-                "h_step": float(h_t),
+                "p_surr": p_surr,
+                "h_step": float(cfg.h_steps),
                 "surrogate_abs_err": surrogate_abs_err,
-                "surrogate_abs_err_hmin": surrogate_abs_err_hmin,
-                "surrogate_abs_err_hmax": surrogate_abs_err_hmax,
+                "surrogate_abs_err_h0": surrogate_abs_err_h0,
                 "surrogate_rank_corr": surrogate_rank_corr,
-                "surrogate_rank_corr_hmin": surrogate_rank_corr_hmin,
-                "surrogate_rank_corr_hmax": surrogate_rank_corr_hmax,
+                "surrogate_rank_corr_h0": surrogate_rank_corr_h0,
+                "surrogate_elite_overlap": elite_overlap,
+                "surrogate_elite_overlap_h0": elite_overlap_h0,
+                "q_disagree_mean": float(jnp.mean(q_disagree)),
+                "q_disagree_rank_corr": q_disagree_rank_corr,
                 "fitness_real_mean": float(jnp.mean(real_fitness)),
                 "fitness_surrogate_mean": float(jnp.mean(surrogate_fitness)),
                 "rl_return": rl_return,
@@ -418,10 +446,11 @@ def train(
                 f"fitness[{'real' if use_real_fitness else 'surrogate'}] "
                 f"best={metrics['fitness_best']:8.1f} "
                 f"mean={metrics['fitness_mean']:8.1f} | "
-                f"td={td_error:7.3f} tdrel={td_error_rel:6.3f} h={h_t:3d} "
-                f"rankcorr(min/adapt/max)="
-                f"{surrogate_rank_corr_hmin:+.2f}/{surrogate_rank_corr:+.2f}/"
-                f"{surrogate_rank_corr_hmax:+.2f} | "
+                f"td={td_error:7.3f} tdrel={td_error_rel:6.3f} "
+                f"p_surr={p_surr:.2f} | "
+                f"rankcorr(H/0)={surrogate_rank_corr:+.2f}/"
+                f"{surrogate_rank_corr_h0:+.2f} "
+                f"elite(H/0)={elite_overlap:.2f}/{elite_overlap_h0:.2f} | "
                 f"rl_return={rl_return:8.1f} | "
                 f"critic_loss={metrics['critic_loss']:8.4f} "
                 f"actor_loss={metrics['actor_loss']:8.4f}"
