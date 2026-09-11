@@ -39,6 +39,7 @@ from scipy.stats import spearmanr, wilcoxon
 ARMS = {
     "": "H (h-step)",
     "_noboot": "H, no bootstrap",
+    "_half": "H/2",
     "_critic": "critic, batch-avg",
     "_h0": "critic, 1 state",
 }
@@ -53,6 +54,8 @@ COLUMNS = [
     "fitness_is_real",
     "q_disagree_mean",
     "q_disagree_rank_corr",
+    "surrogate_rank_stability",
+    "surrogate_elite_stability",
     *(
         f"surrogate_{metric}{suffix}"
         for metric in ("abs_err", "rank_corr", "elite_overlap")
@@ -280,6 +283,18 @@ def main() -> None:
 
     _compare_arms(d)
     _report_disagreement(d["q_disagree_rank_corr"])
+
+    # the rival gate signal: truncation error is what gamma^H says the critic
+    # is not responsible for, and rank stability sees it without a critic.
+    print("\nQ5  does H/2-vs-H rank stability predict the surrogate? (> 0)")
+    for label, key in (
+        ("  rank_stability vs elite_overlap", "surrogate_rank_stability"),
+        ("  elite_stability vs elite_overlap", "surrogate_elite_stability"),
+    ):
+        if np.isfinite(d[key]).any():
+            _report(label, d[key], overlap, args.window)
+        else:
+            print(f"{label:<44} (not logged - run predates it)")
 
     if args.out:
         series = {

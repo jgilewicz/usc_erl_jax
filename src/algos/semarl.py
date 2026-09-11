@@ -315,7 +315,12 @@ def train(
                     warmup,
                 )
 
-            # snapshot the bootstrap state at h_steps
+            # H/2 is scored too: whether the ranking has stopped moving by H
+            # measures truncation error, the part gamma^H says the critic is
+            # not responsible for - so it is the candidate gate signal if the
+            # critic arms come back empty.
+            h_half = max(cfg.h_steps // 2, 1)
+            snap_steps = {h_half, cfg.h_steps}
             h_reward = np.zeros((cfg.pop_size + 1, cfg.h_steps), np.float32)
             h_done = np.zeros((cfg.pop_size + 1, cfg.h_steps), np.float32)
             h_states: dict[int, jnp.ndarray] = {}
@@ -330,6 +335,7 @@ def train(
                 h_reward: np.ndarray = h_reward,
                 h_done: np.ndarray = h_done,
                 h_states: dict[int, jnp.ndarray] = h_states,
+                snap_steps: set[int] = snap_steps,
             ) -> None:
                 if step == 0:
                     h_states[0] = states
@@ -337,8 +343,8 @@ def train(
                     return
                 h_reward[:, step] = np.asarray(reward)
                 h_done[:, step] = np.asarray(terminated)
-                if step + 1 == cfg.h_steps:
-                    h_states[cfg.h_steps] = next_states
+                if step + 1 in snap_steps:
+                    h_states[step + 1] = next_states
 
             returns, key = collect_parallel_episode(
                 vec_env, key, policy, buffer, horizon, on_step=capture_h_step
@@ -401,8 +407,10 @@ def train(
             #   noboot  H with the gamma^H * Q term dropped (is the critic
             #           contributing anything, or is it all real reward?)
             key, crit_key = jax.random.split(key)
+            s_half = surrogate_at(h_half)
             arms = {
                 "": surrogate_fitness,
+                "_half": s_half,
                 "_h0": surrogate_at(0),
                 "_critic": _critic_fitness(
                     td3_state.online.embedding,
@@ -420,6 +428,15 @@ def train(
                     undiscount_scale,
                 ),
             }
+            # self-consistency, needs no ground truth: if the ranking still
+            # moves between H/2 and H the truncated evaluation has not
+            # settled, so the surrogate is unsafe *for reasons the critic
+            # cannot see*. Usable as a gate at collection time.
+            rank_stability = _rank_corr(s_half, surrogate_fitness)
+            elite_stability = _elite_overlap(
+                s_half, surrogate_fitness, cem.parents
+            )
+
             arm_metrics: dict[str, float] = {}
             for suffix, arm in arms.items():
                 arm_metrics[f"surrogate_abs_err{suffix}"] = float(
@@ -493,6 +510,8 @@ def train(
                 "p_surr": p_surr,
                 "h_step": float(cfg.h_steps),
                 **arm_metrics,
+                "surrogate_rank_stability": rank_stability,
+                "surrogate_elite_stability": elite_stability,
                 "q_disagree_mean": float(jnp.mean(q_disagree)),
                 "q_disagree_rank_corr": q_disagree_rank_corr,
                 "fitness_real_mean": float(jnp.mean(real_fitness)),
@@ -516,7 +535,8 @@ def train(
                 f"{arm_metrics['surrogate_rank_corr']:+.2f}/"
                 f"{arm_metrics['surrogate_rank_corr_h0']:+.2f}/"
                 f"{arm_metrics['surrogate_rank_corr_critic']:+.2f}/"
-                f"{arm_metrics['surrogate_rank_corr_noboot']:+.2f} | "
+                f"{arm_metrics['surrogate_rank_corr_noboot']:+.2f} "
+                f"stab={rank_stability:+.2f} | "
                 f"rl_return={rl_return:8.1f} | "
                 f"critic_loss={metrics['critic_loss']:8.4f} "
                 f"actor_loss={metrics['actor_loss']:8.4f}"

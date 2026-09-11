@@ -53,10 +53,14 @@ coin flip is an adaptive `p_surr`. Impl: `src/algos/semarl.py`, config:
 `src/conf/algorithm/semarl.yaml` (inherits `erl.yaml`).
 
 Earlier versions adapted `H` instead. That was dropped: measured on
-Swimmer, `rank_corr` rose monotonically with `H` (h_max +0.79 vs h_min
-+0.27, h_max better in 99% of generations), so there was no critic
+HalfCheetah, `rank_corr` rose monotonically with `H` (h_max +0.79 vs
+h_min +0.27, h_max better in 99% of generations), so there was no critic
 quality at which a short `H` paid — and since the rollout runs the full
 `horizon` either way, a short `H` saved nothing to trade for it.
+
+All tuning to date is HalfCheetah-only: `p_beta = 3.0` is set against
+its `|TD|_rel ≈ 0.21`. The cross-env portability that the `mean|r|`
+normalization is *for* has not been tested on a second env yet.
 
 - **Relative TD error**: each generation, on a fresh replay batch,
   `mean |r + γ(1−d)·min(Q1',Q2') − min(Q1,Q2)|` (`clipped_double_q`,
