@@ -52,23 +52,26 @@ ERL's fixed `h_steps`. Real vs surrogate fitness is still the fixed
 `theta` coin flip (0.6, shared with ERL). Impl: `src/algos/semarl.py`,
 config: `src/conf/algorithm/semarl.yaml` (inherits `erl.yaml`).
 
-- **Absolute TD error**: each generation, on a fresh replay batch,
-  `mean |r + γ(1−d)·min(Q1',Q2') − min(Q1,Q2)|` — clipped-double-Q
-  Bellman residual of the current critic (`clipped_double_q`,
-  `absolute_td_error`), smoothed into `td_error_ema` (`td_ema_decay`).
-- **Adaptive H**: `H = round(h_min + (h_max−h_min)·(1−exp(−h_beta·|TD|_ema)))`
+- **Relative TD error**: each generation, on a fresh replay batch,
+  `mean |r + γ(1−d)·min(Q1',Q2') − min(Q1,Q2)|` (`clipped_double_q`,
+  `absolute_td_error`) normalized by `mean|Q|` from the same batch —
+  `|Q|` scales with the env's return magnitude (and, within a run, with
+  policy quality), so the raw residual isn't portable across envs or
+  stable over training; the ratio is. Smoothed into `td_error_rel_ema`
+  (`td_ema_decay`).
+- **Adaptive H**: `H = round(h_min + (h_max−h_min)·(1−exp(−h_beta·|TD|_rel_ema)))`
   (`adaptive_h_step`), taken from the previous generation's EMA. Accurate
-  critic (low `|TD|`) → short `H`, lean on the critic bootstrap; noisy
-  critic → `H` grows toward `h_max`, lean on real reward.
-- **Metrics**: `td_error` / `td_error_ema` / `h_step`, plus the surrogate's
-  per-generation agreement with the true full-episode return at three
-  horizons (adaptive `H`, `h_min`, `h_max`) — `surrogate_rank_corr*`
-  (Spearman over the population, scale-free, what CEM selection uses) and
-  `surrogate_abs_err*` (kept only to watch surrogate/real scale drift). The
-  dual-H pair tests whether a short horizon ranks worse when the critic is
-  worse.
-- `h_beta` must be tuned to the env's Bellman-residual scale (Q-values
-  here sit on the undiscounted-return scale).
+  critic (low relative `|TD|`) → short `H`, lean on the critic bootstrap;
+  noisy critic → `H` grows toward `h_max`, lean on real reward.
+- **Metrics**: `td_error` (raw, informational) / `td_error_rel` /
+  `td_error_rel_ema` / `h_step`, plus the surrogate's per-generation
+  agreement with the true full-episode return at three horizons (adaptive
+  `H`, `h_min`, `h_max`) — `surrogate_rank_corr*` (Spearman over the
+  population, scale-free, what CEM selection uses) and `surrogate_abs_err*`
+  (kept only to watch surrogate/real scale drift). The dual-H pair tests
+  whether a short horizon ranks worse when the critic is worse.
+- `h_beta` is a dimensionless sensitivity constant on the relative error,
+  meant to be shared across envs (unlike a raw-`|TD|` threshold).
 - The population rollout still runs the full `horizon` (feeds the buffer),
   so `H` currently trades surrogate bias/variance, not env steps — the
   two-call rollout split (RL actor full, population to `H`) is the next
@@ -84,9 +87,10 @@ uv run python scripts/surrogate_diagnostics.py --wandb evo_rl/triage_erl/<run_id
 
 - `justfile`: `install`, `test`, `lint`/`lint-check`, `types`, `check`,
   `train`, `train-all`.
-- `scripts/surrogate_diagnostics.py`: post-hoc — does `td_error` predict
-  surrogate inaccuracy, and does a short `H` hurt more when the critic is
-  worse (raw + trend-removed Spearman).
+- `scripts/surrogate_diagnostics.py`: post-hoc — does relative `|TD|`
+  predict a worse-ranking surrogate, and does a short `H` rank worse when
+  the critic is worse (raw + trend-removed Spearman); flags a saturated
+  `h_step` (constant across the run, usually an `h_beta`/TD-scale mismatch).
 - `slurm_run_array.sh`: array job, one `(algorithm, seed)` task per
   index; 6 algos × 5 seeds = 30 tasks for one `TARGET_ENV`.
 

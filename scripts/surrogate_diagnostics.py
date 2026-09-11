@@ -5,14 +5,24 @@ using the surrogate's *rank* correlation with the true return (scale-free -
 what CEM selection depends on, and it survives the surrogate/real
 return-scale mismatch):
 
-  1. Does |TD| predict a worse-ranking surrogate?
-     corr(td_error, rank_corr at a fixed horizon)      -- expect negative
+  1. Does |TD|_rel predict a worse-ranking surrogate?
+     corr(td_error_rel, rank_corr at a fixed horizon)      -- expect negative
   2. Premise - does a short horizon rank worse when the critic is worse?
-     corr(td_error, rank_corr_hmin - rank_corr_hmax)   -- expect negative
+     corr(td_error_rel, rank_corr_hmin - rank_corr_hmax)   -- expect negative
 
-Reported raw and detrended: |TD| and surrogate quality both move over
-training, and that shared trend alone inflates a raw correlation. Trust the
-detrended number (Spearman on rolling-median residuals).
+Uses td_error_rel (|TD| / mean|Q|) when the run logged it, else falls back
+to the raw td_error (older runs) with a warning - the raw residual scales
+with |Q|, which grows both across envs and within a run as returns grow, so
+it is not the quantity adaptive_h_step's h_beta was calibrated against.
+
+Also flags a saturated h_step (no variance = the run never actually
+adapted, usually because h_beta didn't match this run's TD-error scale) -
+that alone invalidates the correlations below, since there is nothing for
+them to be measured against.
+
+Reported raw and detrended: the TD signal and surrogate quality both move
+over training, and that shared trend alone inflates a raw correlation.
+Trust the detrended number (Spearman on rolling-median residuals).
 
     uv run python scripts/surrogate_diagnostics.py --csv run.csv
     uv run python scripts/surrogate_diagnostics.py --wandb evo_rl/triage_erl/abc123
@@ -30,7 +40,8 @@ from scipy.stats import spearmanr
 COLUMNS = [
     "generation",
     "td_error",
-    "td_error_ema",
+    "td_error_rel",
+    "td_error_rel_ema",
     "h_step",
     "fitness_is_real",
     "surrogate_abs_err",
@@ -164,9 +175,33 @@ def main() -> None:
     if args.real_only:
         keep &= d["fitness_is_real"] > 0.5
     d = {k: v[keep] for k, v in d.items()}
-    print(f"{int(keep.sum())} generations after filtering\n")
+    print(f"{int(keep.sum())} generations after filtering")
 
-    td = d["td_error"]
+    h = d["h_step"]
+    h_valid = h[np.isfinite(h)]
+    if len(h_valid) and h_valid.max() - h_valid.min() < 1:
+        print(
+            f"\n!! h_step is constant ({h_valid[0]:.0f}) for every generation "
+            "-- H never adapted, so nothing below is measuring what it "
+            "claims to. Usually h_beta doesn't match this run's TD-error "
+            "scale (all-real-eval or a saturated sigmoid); fix that and "
+            "re-run before trusting the correlations."
+        )
+    else:
+        print(f"h_step range: [{h_valid.min():.0f}, {h_valid.max():.0f}]")
+
+    if np.isfinite(d["td_error_rel"]).any():
+        td = d["td_error_rel"]
+        td_label = "|TD|_rel"
+    else:
+        print(
+            "\n(no td_error_rel - older run; falling back to raw td_error, "
+            "which is not comparable across envs/training progress)"
+        )
+        td = d["td_error"]
+        td_label = "|TD|"
+    print()
+
     rc_min = d["surrogate_rank_corr_hmin"]
     rc_max = d["surrogate_rank_corr_hmax"]
     rc_adapt = d["surrogate_rank_corr"]
@@ -174,14 +209,16 @@ def main() -> None:
     has_rc = np.isfinite(rc_max).any()
 
     if has_rc:
-        print("Q1  does |TD| predict a worse-ranking surrogate? (expect < 0)")
-        _report("  |TD| vs rank_corr(H=h_min)", td, rc_min, args.window)
-        _report("  |TD| vs rank_corr(H=h_max)", td, rc_max, args.window)
+        print(
+            f"Q1  does {td_label} predict a worse-ranking surrogate? (expect < 0)"
+        )
+        _report(f"  {td_label} vs rank_corr(H=h_min)", td, rc_min, args.window)
+        _report(f"  {td_label} vs rank_corr(H=h_max)", td, rc_max, args.window)
         print(
             "\nQ2  premise: short H ranks worse when critic worse (expect < 0)"
         )
         _report(
-            "  |TD| vs (rank_corr_hmin - rank_corr_hmax)",
+            f"  {td_label} vs (rank_corr_hmin - rank_corr_hmax)",
             td,
             rc_gap,
             args.window,
@@ -205,7 +242,10 @@ def main() -> None:
     err_max = d["surrogate_abs_err_hmax"]
     print("\nabs_err (scale-sensitive, watch surrogate/real scale drift)")
     _report(
-        "  |TD| vs (err_hmin - err_hmax)", td, err_min - err_max, args.window
+        f"  {td_label} vs (err_hmin - err_hmax)",
+        td,
+        err_min - err_max,
+        args.window,
     )
     frac = float(np.nanmean((err_min < err_max).astype(float)))
     print(

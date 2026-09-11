@@ -35,11 +35,16 @@ from algos.erl import ERLConfig
 @dataclass(frozen=True)
 class SEMARLConfig(ERLConfig):
     # h-step bootstrap horizon adapts to critic error instead of ERL's fixed
-    # h_steps: H = h_min + (h_max - h_min) * (1 - exp(-h_beta * ema|TD|)).
+    # h_steps: H = h_min + (h_max - h_min) * (1 - exp(-h_beta * ema|TD|_rel)).
+    # |TD|_rel = |TD| / mean|Q| (relative Bellman residual) rather than the
+    # raw |TD|: |Q| scales with the env's return magnitude (and, within a
+    # run, with policy quality), so the raw residual isn't portable across
+    # envs or stable over training. h_beta is a dimensionless sensitivity
+    # constant on that ratio, meant to be shared across envs.
     # theta (from ERLConfig) still gates real vs surrogate fitness.
     h_min: int = 25
     h_max: int = 250
-    h_beta: float = 0.5  # tune to the env's Bellman-residual scale
+    h_beta: float = 10.0
     td_ema_decay: float = 0.1
 
 
@@ -206,7 +211,7 @@ def train(
     undiscount_scale = horizon * (1.0 - cfg.gamma) / (1.0 - cfg.gamma**horizon)
 
     pending_injection: int | None = None
-    td_error_ema: float | None = None
+    td_rel_ema: float | None = None
     try:
         for generation in range(cfg.generations):
             key, ask_key = jax.random.split(key)
@@ -219,9 +224,9 @@ def train(
             warmup = len(buffer) < cfg.warmup_steps
             h_t = (
                 cfg.h_max
-                if td_error_ema is None
+                if td_rel_ema is None
                 else adaptive_h_step(
-                    cfg.h_min, cfg.h_max, cfg.h_beta, td_error_ema
+                    cfg.h_min, cfg.h_max, cfg.h_beta, td_rel_ema
                 )
             )
 
@@ -277,6 +282,7 @@ def train(
             key, coin_key = jax.random.split(key)
             if warmup:
                 td_error = 0.0
+                td_error_rel = 0.0
             else:
                 key, td_key, td_sample_key = jax.random.split(key, 3)
                 td_batch = buffer.sample(td_sample_key, cfg.batch_size)
@@ -292,11 +298,14 @@ def train(
                         td_batch["done"],
                     )
                 )
-                td_error_ema = (
-                    td_error
-                    if td_error_ema is None
-                    else (1.0 - cfg.td_ema_decay) * td_error_ema
-                    + cfg.td_ema_decay * td_error
+                # |Q| grows with the return scale
+                q_scale = float(jnp.mean(jnp.abs(q))) + 1e-6
+                td_error_rel = td_error / q_scale
+                td_rel_ema = (
+                    td_error_rel
+                    if td_rel_ema is None
+                    else (1.0 - cfg.td_ema_decay) * td_rel_ema
+                    + cfg.td_ema_decay * td_error_rel
                 )
 
             use_real_fitness = warmup or bool(
@@ -383,8 +392,9 @@ def train(
                 "fitness_mean": float(jnp.mean(fitness)),
                 "fitness_is_real": float(use_real_fitness),
                 "td_error": td_error,
-                "td_error_ema": td_error_ema
-                if td_error_ema is not None
+                "td_error_rel": td_error_rel,
+                "td_error_rel_ema": td_rel_ema
+                if td_rel_ema is not None
                 else 0.0,
                 "h_step": float(h_t),
                 "surrogate_abs_err": surrogate_abs_err,
@@ -408,7 +418,7 @@ def train(
                 f"fitness[{'real' if use_real_fitness else 'surrogate'}] "
                 f"best={metrics['fitness_best']:8.1f} "
                 f"mean={metrics['fitness_mean']:8.1f} | "
-                f"td={td_error:7.3f} h={h_t:3d} "
+                f"td={td_error:7.3f} tdrel={td_error_rel:6.3f} h={h_t:3d} "
                 f"rankcorr(min/adapt/max)="
                 f"{surrogate_rank_corr_hmin:+.2f}/{surrogate_rank_corr:+.2f}/"
                 f"{surrogate_rank_corr_hmax:+.2f} | "

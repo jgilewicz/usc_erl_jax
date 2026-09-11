@@ -9,9 +9,10 @@ defaults:
 
 name: semarl
 
-# H = round(h_min + (h_max - h_min) * (1 - exp(-h_beta * ema|TD|))), taken
-# from the previous generation's smoothed clipped-double-Q Bellman residual.
-# h_beta must be tuned to the env's Bellman-residual scale.
+# H = round(h_min + (h_max - h_min) * (1 - exp(-h_beta * ema|TD|_rel)))
+# |TD|_rel = |TD| / mean|Q|, the previous generation's smoothed relative
+# clipped-double-Q Bellman residual - normalized so h_beta is a dimensionless
+# constant shared across envs, not a per-env Bellman-residual-scale tune.
 h_min: 25
 h_max: 250
 h_beta: 10
