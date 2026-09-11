@@ -73,11 +73,22 @@ quality at which a short `H` paid — and since the rollout runs the full
   population rollout is truncated. Accurate critic → more surrogate
   generations; noisy critic → fall back to real evaluation.
 - **Metrics**: `td_error` (raw, informational) / `td_error_rel` /
-  `td_error_rel_ema` / `p_surr`, plus the surrogate's per-generation
-  agreement with the true full-episode return at two horizons — the
-  `h_steps` bootstrap in use and `H=0` (pure critic value, the
-  SEMARL-style surrogate, carried as the baseline arm of the
-  cost/accuracy curve):
+  `td_error_rel_ema` / `p_surr`, plus the per-generation agreement with
+  the true full-episode return for four fitness estimators, all scored
+  for free every generation (suffix on each metric name):
+  - `` (none) — the `h_steps` bootstrap actually driving selection.
+  - `_noboot` — the same, with the `γ^H·Q` term dropped. Isolates how
+    much of the surrogate is accumulated real reward rather than critic:
+    the bootstrap's share of the value is exactly `γ^H` (8.1% at γ=0.99,
+    H=250). If this matches the `H` arm, the critic contributes nothing.
+  - `_critic` — `E_{s~D}[min(Q1,Q2)(s, π_i(s))]` over a replay batch, the
+    standard critic-only fitness and the honest SEMARL-style baseline.
+  - `_h0` — its degenerate one-state case (bootstrap at the episode's
+    first state). Kept for contrast: every individual starts from
+    near-identical states, so this arm must separate policies by their
+    action at a single point, and lands near chance.
+
+  For each arm:
   - `surrogate_elite_overlap*` — fraction of CEM's top-`parents` set the
     surrogate gets right. The headline number: `_cem_tell` keeps
     `argsort(-scores)[:parents]` and discards everything else, so this is
@@ -85,12 +96,11 @@ quality at which a short `H` paid — and since the rollout runs the full
   - `surrogate_rank_corr*` — Spearman over the whole population; looser,
     also scores pairs selection never looks at.
   - `surrogate_abs_err*` — kept only to watch surrogate/real scale drift.
-  - `q_disagree_mean` / `q_disagree_rank_corr` — per-individual
-    `|Q1−Q2|` at the surrogate's own bootstrap states, and its
-    correlation with how far that individual is misranked. Logged but
-    unused: it is the candidate gating signal for uncertainty-gated
-    `p_surr`, and this says whether it carries anything before it is
-    wired in.
+- `q_disagree_mean` / `q_disagree_rank_corr` — per-individual `|Q1−Q2|`
+  at the surrogate's own bootstrap states, and its correlation with how
+  far that individual is misranked. Logged but unused: it is the
+  candidate gating signal for uncertainty-gated `p_surr`, and this says
+  whether it carries anything before it is wired in.
 - `p_beta` is a dimensionless sensitivity constant on the relative error,
   meant to be shared across envs (unlike a raw-`|TD|` threshold).
 - `theta` and `h_steps` are inherited from `ERLConfig`; SEMARL uses
@@ -113,7 +123,8 @@ uv run python scripts/surrogate_diagnostics.py --wandb evo_rl/triage_erl/<run_id
   `train`, `train-all`.
 - `scripts/surrogate_diagnostics.py`: post-hoc — does relative `|TD|`
   predict a worse surrogate, does `p_surr` open when the surrogate is
-  good, how the `H` and `H=0` arms compare, and whether `|Q1−Q2|` flags
+  good, how the four fitness-estimator arms compare (including whether
+  dropping the bootstrap changes anything), and whether `|Q1−Q2|` flags
   the misranked individuals (raw + trend-removed Spearman); flags a
   saturated `p_surr` — constant, *or* pinned against a rail, which is the
   same non-result and easy to miss in the range alone.

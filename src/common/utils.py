@@ -64,5 +64,4 @@ def relative_td_error(abs_td_error: float, reward_scale: float) -> float:
 def adaptive_p_surr(
     p_min: float, p_max: float, beta: float, rel_td_error: float
 ) -> float:
-    # accurate critic (low relative residual) -> lean on the surrogate.
     return p_min + (p_max - p_min) * math.exp(-beta * rel_td_error)

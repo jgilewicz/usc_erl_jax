@@ -35,6 +35,14 @@ from pathlib import Path
 import numpy as np
 from scipy.stats import spearmanr, wilcoxon
 
+# metric-name suffix -> label. "" is the h-step bootstrap driving selection.
+ARMS = {
+    "": "H (h-step)",
+    "_noboot": "H, no bootstrap",
+    "_critic": "critic, batch-avg",
+    "_h0": "critic, 1 state",
+}
+
 COLUMNS = [
     "generation",
     "td_error",
@@ -43,14 +51,13 @@ COLUMNS = [
     "p_surr",
     "h_step",
     "fitness_is_real",
-    "surrogate_abs_err",
-    "surrogate_abs_err_h0",
-    "surrogate_rank_corr",
-    "surrogate_rank_corr_h0",
-    "surrogate_elite_overlap",
-    "surrogate_elite_overlap_h0",
     "q_disagree_mean",
     "q_disagree_rank_corr",
+    *(
+        f"surrogate_{metric}{suffix}"
+        for metric in ("abs_err", "rank_corr", "elite_overlap")
+        for suffix in ARMS
+    ),
 ]
 
 
@@ -177,22 +184,32 @@ def _describe_gate(p: np.ndarray) -> None:
 def _compare_arms(d: dict[str, np.ndarray]) -> None:
     # CEM keeps parents = pop_size // 2, so two unrelated rankings already
     # share half their elite set: 0.5 is chance, not 0.
-    print(
-        "\nQ3  h-step bootstrap (H) vs pure critic value (H=0)"
-        "   [elite_overlap chance = 0.5]"
-    )
-    for label, key in (
-        ("elite_overlap", "surrogate_elite_overlap"),
-        ("rank_corr", "surrogate_rank_corr"),
-        ("abs_err", "surrogate_abs_err"),
-    ):
-        at_h, at_0 = d[key], d[f"{key}_h0"]
-        if not np.isfinite(at_0).any():
-            print(f"  {label:<16} (no H=0 arm logged)")
-            continue
+    print("\nQ3  fitness estimators   [elite_overlap chance = 0.5]")
+    print(f"  {'arm':<20}{'elite_ovl':>11}{'rank_corr':>11}{'abs_err':>12}")
+    for suffix, label in ARMS.items():
+        cells = []
+        for metric in ("elite_overlap", "rank_corr", "abs_err"):
+            v = d[f"surrogate_{metric}{suffix}"]
+            cells.append(
+                "     n/a" if not np.isfinite(v).any() else np.nanmean(v)
+            )
+        fmt = "".join(
+            f"{c:>11}" if isinstance(c, str) else f"{c:>+11.3f}"
+            for c in cells[:2]
+        )
+        err = cells[2]
+        tail = f"{err:>12}" if isinstance(err, str) else f"{err:>12.1f}"
+        print(f"  {label:<20}{fmt}{tail}")
+
+    # if dropping gamma^H * Q changes nothing, the critic is not contributing
+    # to the surrogate that actually drives selection.
+    boot = d["surrogate_elite_overlap"]
+    nobo = d["surrogate_elite_overlap_noboot"]
+    if np.isfinite(nobo).any():
+        delta = np.nanmean(boot) - np.nanmean(nobo)
         print(
-            f"  {label:<16} H={np.nanmean(at_h):+.3f}   "
-            f"H=0={np.nanmean(at_0):+.3f}"
+            f"\n  bootstrap contribution: elite_overlap {delta:+.3f} "
+            f"vs reward-only  ({'critic adds nothing' if abs(delta) < 0.02 else 'critic contributes'})"
         )
 
 

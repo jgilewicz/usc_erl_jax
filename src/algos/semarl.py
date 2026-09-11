@@ -100,6 +100,49 @@ def _surrogate_fitness(
 
 
 @eqx.filter_jit
+def _critic_fitness(
+    embedding: SharedStateEmbedding,
+    critic1: Critic,
+    critic2: Critic,
+    pop_heads: ActorHead,
+    states: jnp.ndarray,
+    undiscount_scale: float,
+) -> jnp.ndarray:
+    # E_{s~D}[min(Q1,Q2)(s, pi_i(s))] over a replay batch - the standard
+    # critic-only policy fitness in the ERL literature, and the honest
+    # SEMARL-style baseline. The H=0 arm is its degenerate one-state case:
+    # every individual starts from near-identical states, so that arm has to
+    # separate policies by their action at a single point.
+    z = jax.vmap(embedding)(states)
+
+    def head_value(head: ActorHead) -> jnp.ndarray:
+        actions = jax.vmap(head)(z)
+        q1 = jax.vmap(critic1)(states, actions)[..., 0]
+        q2 = jax.vmap(critic2)(states, actions)[..., 0]
+        return jnp.mean(jnp.minimum(q1, q2))
+
+    return jax.vmap(head_value)(pop_heads) * undiscount_scale
+
+
+@eqx.filter_jit
+def _reward_only_fitness(
+    h_reward: jnp.ndarray,
+    h_done: jnp.ndarray,
+    h_steps: int,
+    gamma: float,
+    undiscount_scale: float,
+) -> jnp.ndarray:
+    # the h-step surrogate with the gamma^H * Q term zeroed out: isolates how
+    # much of its accuracy is the accumulated real reward rather than the
+    # critic. The bootstrap's share of the value is exactly gamma^H.
+    no_bootstrap = jnp.zeros(h_reward.shape[0])
+    discounted = h_step_bootstrap(
+        h_steps, gamma, h_reward, h_done, no_bootstrap
+    )
+    return discounted * undiscount_scale
+
+
+@eqx.filter_jit
 def _critic_disagreement(
     embedding: SharedStateEmbedding,
     critic1: Critic,
@@ -350,18 +393,44 @@ def train(
             surrogate_fitness = surrogate_at(cfg.h_steps)
             fitness = real_fitness if use_real_fitness else surrogate_fitness
 
-            # real_fitness is the true full-episode return every generation
-            s_h0 = surrogate_at(0)
-            surrogate_abs_err = float(
-                jnp.mean(jnp.abs(real_fitness - surrogate_fitness))
-            )
-            surrogate_abs_err_h0 = float(jnp.mean(jnp.abs(real_fitness - s_h0)))
-            surrogate_rank_corr = _rank_corr(real_fitness, surrogate_fitness)
-            surrogate_rank_corr_h0 = _rank_corr(real_fitness, s_h0)
-            elite_overlap = _elite_overlap(
-                real_fitness, surrogate_fitness, cem.parents
-            )
-            elite_overlap_h0 = _elite_overlap(real_fitness, s_h0, cem.parents)
+            # real_fitness is the true full-episode return every generation,
+            # so every arm below is scored for free against the truth:
+            #   H       the h-step bootstrap actually driving selection
+            #   h0      its degenerate one-state critic case
+            #   critic  batch-averaged critic value (the fair SEMARL baseline)
+            #   noboot  H with the gamma^H * Q term dropped (is the critic
+            #           contributing anything, or is it all real reward?)
+            key, crit_key = jax.random.split(key)
+            arms = {
+                "": surrogate_fitness,
+                "_h0": surrogate_at(0),
+                "_critic": _critic_fitness(
+                    td3_state.online.embedding,
+                    td3_state.online.critic1,
+                    td3_state.online.critic2,
+                    pop_heads,
+                    buffer.sample(crit_key, cfg.batch_size)["state"],
+                    undiscount_scale,
+                ),
+                "_noboot": _reward_only_fitness(
+                    jnp.asarray(h_reward[:-1]),
+                    jnp.asarray(h_done[:-1]),
+                    cfg.h_steps,
+                    cfg.gamma,
+                    undiscount_scale,
+                ),
+            }
+            arm_metrics: dict[str, float] = {}
+            for suffix, arm in arms.items():
+                arm_metrics[f"surrogate_abs_err{suffix}"] = float(
+                    jnp.mean(jnp.abs(real_fitness - arm))
+                )
+                arm_metrics[f"surrogate_rank_corr{suffix}"] = _rank_corr(
+                    real_fitness, arm
+                )
+                arm_metrics[f"surrogate_elite_overlap{suffix}"] = (
+                    _elite_overlap(real_fitness, arm, cem.parents)
+                )
 
             # does per-individual critic disagreement flag
             q_disagree = _critic_disagreement(
@@ -423,12 +492,7 @@ def train(
                 else 0.0,
                 "p_surr": p_surr,
                 "h_step": float(cfg.h_steps),
-                "surrogate_abs_err": surrogate_abs_err,
-                "surrogate_abs_err_h0": surrogate_abs_err_h0,
-                "surrogate_rank_corr": surrogate_rank_corr,
-                "surrogate_rank_corr_h0": surrogate_rank_corr_h0,
-                "surrogate_elite_overlap": elite_overlap,
-                "surrogate_elite_overlap_h0": elite_overlap_h0,
+                **arm_metrics,
                 "q_disagree_mean": float(jnp.mean(q_disagree)),
                 "q_disagree_rank_corr": q_disagree_rank_corr,
                 "fitness_real_mean": float(jnp.mean(real_fitness)),
@@ -448,9 +512,11 @@ def train(
                 f"mean={metrics['fitness_mean']:8.1f} | "
                 f"td={td_error:7.3f} tdrel={td_error_rel:6.3f} "
                 f"p_surr={p_surr:.2f} | "
-                f"rankcorr(H/0)={surrogate_rank_corr:+.2f}/"
-                f"{surrogate_rank_corr_h0:+.2f} "
-                f"elite(H/0)={elite_overlap:.2f}/{elite_overlap_h0:.2f} | "
+                f"rankcorr(H/0/crit/nobo)="
+                f"{arm_metrics['surrogate_rank_corr']:+.2f}/"
+                f"{arm_metrics['surrogate_rank_corr_h0']:+.2f}/"
+                f"{arm_metrics['surrogate_rank_corr_critic']:+.2f}/"
+                f"{arm_metrics['surrogate_rank_corr_noboot']:+.2f} | "
                 f"rl_return={rl_return:8.1f} | "
                 f"critic_loss={metrics['critic_loss']:8.4f} "
                 f"actor_loss={metrics['actor_loss']:8.4f}"

@@ -44,6 +44,13 @@ scripts/               # post-hoc analysis, not shipped in the wheel
   elite membership is all selection consumes; chance is 0.5). Rank
   correlation is the looser secondary view, `abs_err` only watches scale
   drift.
+- Four fitness estimators are scored against the true return every
+  generation, by metric-name suffix: `` = the `h_steps` bootstrap in use,
+  `_noboot` = same with `γ^H·Q` dropped, `_critic` =
+  `E_{s~D}[Q(s, π_i(s))]` over a replay batch, `_h0` = its one-state
+  case. Adding an arm means adding a suffix to the `arms` dict in
+  `semarl.py` and to `ARMS` in `surrogate_diagnostics.py` — the metric
+  names and the report table are generated from those.
 - `collect_parallel_episode`'s `on_step` hook takes
   `(step, states, reward, terminated, truncated, next_states)` — `states`
   is there so an `H=0` bootstrap can be scored at the episode's first
