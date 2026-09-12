@@ -37,6 +37,7 @@ check: lint-check types test
 # train one algorithm; extra tokens are Hydra overrides
 #   just train sac Hopper-v5
 #   just train semarl Swimmer-v5 total_steps=3_000_000 algorithm.h_beta=6
+#   just train semarl Swimmer-v5 seed=3   # seed sweeps: seed=N is a Hydra override
 #   N_ENVS=4 just train sac Hopper-v5   # override the detected core count
 train algo="sac" env="Swimmer-v5" *overrides:
     uv run python -m train \

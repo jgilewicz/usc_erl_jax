@@ -62,7 +62,10 @@ def _run_erl(cfg: DictConfig) -> float:
         ERLConfig(**_erl_kwargs(cfg)), on_generation=wandb.log
     )
     return evaluate_erl_actor(
-        cfg.eval_env.id, td3_state, episodes=cfg.eval.episodes
+        cfg.eval_env.id,
+        td3_state,
+        episodes=cfg.eval.episodes,
+        seed=cfg.seed + 10_000,
     )
 
 
@@ -80,7 +83,10 @@ def _run_semarl(cfg: DictConfig) -> float:
     )
     td3_state = train_semarl(semarl_cfg, on_generation=wandb.log)
     return evaluate_semarl_actor(
-        cfg.eval_env.id, td3_state, episodes=cfg.eval.episodes
+        cfg.eval_env.id,
+        td3_state,
+        episodes=cfg.eval.episodes,
+        seed=cfg.seed + 10_000,
     )
 
 

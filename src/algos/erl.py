@@ -358,13 +358,17 @@ def train(
 
 
 def evaluate_actor(
-    env_name: str, td3_state: TD3State, *, episodes: int = 5
+    env_name: str,
+    td3_state: TD3State,
+    *,
+    episodes: int = 5,
+    seed: int | None = None,
 ) -> float:
     env = environments.make_env(env_name)
     try:
         total_reward = 0.0
-        for _ in range(episodes):
-            state, _ = env.reset()
+        for i in range(episodes):
+            state, _ = env.reset(seed=seed if i == 0 else None)
             done = False
             while not done:
                 action = np.asarray(
