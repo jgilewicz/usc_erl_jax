@@ -27,9 +27,7 @@ def _erl_kwargs(cfg: DictConfig) -> dict[str, Any]:
     return dict(
         env_name=cfg.env.id,
         seed=cfg.seed,
-        # a budget, not a generation count - SEMARL's generations cost
-        # different amounts, so total_steps means the same thing everywhere
-        # only if the loop spends it rather than counting iterations.
+        # a budget, not a generation count: generation cost varies by algorithm
         step_budget=int(cfg.total_steps),
         horizon=horizon,
         async_env=algo_cfg.async_env,
@@ -123,8 +121,7 @@ def run_training(cfg: DictConfig) -> float:
     )
     dispatch = {"erl": _run_erl, "semarl": _run_semarl}
     if cfg.algorithm.name in dispatch:
-        # generations cost different amounts once the rollout is split, so
-        # every curve has to be read against interaction, not iteration.
+        # x-axis is interaction, not iteration: generation cost varies by algorithm
         wandb.define_metric("env_steps")
         wandb.define_metric("*", step_metric="env_steps")
     try:

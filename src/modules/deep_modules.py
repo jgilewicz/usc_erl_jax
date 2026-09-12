@@ -253,13 +253,6 @@ class PolicyEncoder(eqx.Module):
 
 
 class PeVFA(eqx.Module):
-    """Policy-extended value function: Q(s, a, chi(W)).
-
-    Unlike `Critic`, the policy is an *input*, so this can value a policy it
-    has never collected data from - which is what an EA population needs.
-    A plain Q(s, a) only sees a policy through its action at s.
-    """
-
     policy_encoder: PolicyEncoder
     q_net: eqx.nn.Sequential
 

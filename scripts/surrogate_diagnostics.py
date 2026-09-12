@@ -98,8 +98,7 @@ def _from_wandb(spec: str) -> dict[str, np.ndarray]:
                 "pass one of those ids"
             ) from None
         run = matches[0]
-    # no keys= filter: scan_history drops every row when any requested key
-    # was never logged (e.g. env_steps on an older run).
+    # no keys= filter: scan_history drops every row missing any requested key
     hist = [row for row in run.scan_history() if "generation" in row]
     if not hist:
         raise ValueError(f"run {run.id} has no per-generation history")
@@ -122,8 +121,7 @@ def _describe_gate(p: np.ndarray, is_real: np.ndarray) -> None:
     if np.ptp(valid) < 1e-3:
         print(f"!! p_surr constant ({valid[0]:.3f}) - the gate never moved")
     elif valid.mean() < 0.05 or valid.mean() > 0.95:
-        # a gate that technically moves but sits against a rail is the same
-        # non-result as a constant one, and is easy to miss in the range.
+        # pinned against a rail is as much a non-result as constant, just easy to miss
         print(f"!! {span}\n   gate pinned against a rail - retune p_beta")
     else:
         print(span)
@@ -133,9 +131,7 @@ def _compare_arms(d: dict[str, np.ndarray]) -> None:
     print("\nFitness estimators   [elite_overlap chance = 0.5]")
     header = f"  {'arm':<20}{'elite_ovl':>11}{'rank_corr':>11}{'abs_err':>12}"
     print(f"{header}{'steps/gen':>11}{'signal/1k':>11}")
-    # taken from the run, not assumed: env_steps_gen is the full population
-    # generation on real gens and the RL actor alone on surrogate gens, which
-    # is exactly what each arm costs when it is the one selecting.
+    # env_steps_gen taken from the run: full population cost on real gens, RL actor alone on surrogate gens
     per_gen = d["env_steps_gen"]
     per_gen = per_gen[np.isfinite(per_gen)]
     if not len(per_gen):
@@ -172,8 +168,7 @@ def _compare_arms(d: dict[str, np.ndarray]) -> None:
 
 
 def _report_convergence(d: dict[str, np.ndarray]) -> None:
-    # all arms decay together as CEM narrows and individuals stop differing;
-    # what matters is whether the gap between them narrows too.
+    # arms decay together as CEM narrows; what matters is whether the gap between them narrows too
     g = d["generation"]
     finite = g[np.isfinite(g)]
     if len(finite) < 40:

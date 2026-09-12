@@ -40,27 +40,19 @@ from algos.erl import ERLConfig
 
 @dataclass(frozen=True)
 class SEMARLConfig(ERLConfig):
-    # Inherited but inert here: `theta` (p_surr replaces it) and `h_steps`,
-    # which now only sizes the h-bootstrap *diagnostic* arm - nothing about
-    # training changes if you move it. It would become live again only if
-    # a truncated-population generation were reintroduced as a third mode
-    # between "full real rollout" and "no rollout at all".
+    # `theta`/`h_steps` inherited but inert: p_surr replaces theta, h_steps only sizes the diagnostic arm
     p_surr_min: float = 0.0
     p_surr_max: float = 0.9
     p_beta: float = 3.0
     td_ema_decay: float = 0.1
 
-    # PeVFA: Q(s, a, chi(W)) trained alongside, scored as the `_pevfa` arm.
-    # Measured only - it does not select, so enabling it cannot change a
-    # baseline. Promote it once it beats `_critic` on elite_overlap.
+    # PeVFA: Q(s, a, chi(W)), measured as `_pevfa` only - promote once it beats `_critic` on elite_overlap
     pevfa_embed_dim: int = 64
     pevfa_lr: float = 1e-3
     pevfa_train_ratio: float = 0.25
 
 
-# the population and the RL actor run in separate vec envs so a surrogate
-# generation can skip the population rollout entirely - that skip is the
-# whole env-step saving, and it is impossible while both step in lockstep.
+# population and RL actor run in separate vec envs so a surrogate generation can skip the population rollout
 @eqx.filter_jit
 def _pop_policy(
     embedding: SharedStateEmbedding,
@@ -111,11 +103,7 @@ def _bootstrap_fitness(
     gamma: float,
     undiscount_scale: float,
 ) -> jnp.ndarray:
-    # ERL's h-step bootstrap. In SEMARL this is a *measured arm only* - it
-    # never selects (real generations use the true return, surrogate ones use
-    # _critic_fitness), so cfg.h_steps changes nothing about training here.
-    # Not the same thing as erl.py's identically-shaped _surrogate_fitness,
-    # which does drive selection.
+    # ERL's h-step bootstrap, measured only here - _critic_fitness drives selection instead
     z = jax.vmap(embedding)(h_state)
     own_actions = jax.vmap(lambda head, zi: head(zi))(pop_heads, z)
     q1 = jax.vmap(critic1)(h_state, own_actions)[..., 0]
@@ -135,10 +123,7 @@ def _critic_fitness(
     states: jnp.ndarray,
     undiscount_scale: float,
 ) -> jnp.ndarray:
-    # E_{s~D}[min(Q1,Q2)(s, pi_i(s))] over a replay batch. Averaging over the
-    # batch is what makes this work at all: scored at a single state it sits
-    # at chance (measured +0.011 rank_corr), because every individual starts
-    # from near-identical states and one action cannot separate policies.
+    # E_{s~D}[min(Q1,Q2)(s, pi_i(s))]: averaging over the batch is required, single states sit at chance
     z = jax.vmap(embedding)(states)
 
     def head_value(head: ActorHead) -> jnp.ndarray:
@@ -298,10 +283,7 @@ def train(
     pevfa_step = make_pevfa_step(
         cfg.gamma, cfg.tau, pevfa_optimizer, unravel_head
     )
-    # Ring of raw policy params, indexed by the buffer's policy_id. Slots are
-    # consumed at exactly 1/horizon per env step whichever generation type
-    # runs, so sizing by buffer_capacity // horizon cannot wrap round onto a
-    # policy whose transitions are still live.
+    # ring of raw policy params by policy_id; sized so it can't wrap onto a still-live policy
     max_policies = cfg.buffer_capacity // horizon + 2 * (cfg.pop_size + 1)
     policy_table = np.zeros((max_policies, num_params), np.float32)
     policy_cursor = 0
@@ -319,15 +301,6 @@ def train(
                 flat_pop = flat_pop.at[pending_injection].set(rl_flat)
             pop_heads = jax.vmap(unravel_head)(flat_pop)
 
-            rl_flat_now, _ = ravel_pytree(td3_state.online.actor)
-            n_new = cfg.pop_size + 1
-            slots = (policy_cursor + np.arange(n_new)) % max_policies
-            policy_table[slots[:-1]] = np.asarray(flat_pop)
-            policy_table[slots[-1]] = np.asarray(rl_flat_now)
-            policy_cursor = (policy_cursor + n_new) % max_policies
-            pop_ids = jnp.asarray(slots[:-1], dtype=jnp.int32)
-            rl_ids = jnp.asarray(slots[-1:], dtype=jnp.int32)
-
             warmup = len(buffer) < cfg.warmup_steps
             p_surr = (
                 0.0
@@ -338,6 +311,17 @@ def train(
             )
             key, coin_key = jax.random.split(key)
             use_real_fitness = not bool(jax.random.bernoulli(coin_key, p_surr))
+
+            # Register only the policies that will actually collect.
+            rl_flat_now, _ = ravel_pytree(td3_state.online.actor)
+            n_new = cfg.pop_size + 1 if use_real_fitness else 1
+            slots = (policy_cursor + np.arange(n_new)) % max_policies
+            policy_table[slots[-1]] = np.asarray(rl_flat_now)
+            rl_ids = jnp.asarray(slots[-1:], dtype=jnp.int32)
+            if use_real_fitness:
+                policy_table[slots[:-1]] = np.asarray(flat_pop)
+                pop_ids = jnp.asarray(slots[:-1], dtype=jnp.int32)
+            policy_cursor = (policy_cursor + n_new) % max_policies
 
             def rl_policy(
                 act_key: jax.Array,
@@ -384,8 +368,7 @@ def train(
                 if step + 1 == cfg.h_steps:
                     h_states[cfg.h_steps] = next_states
 
-            # the RL actor always runs a full episode: it is the gradient
-            # learner and the only guaranteed source of fresh buffer data.
+            # RL actor always runs a full episode: only guaranteed source of fresh buffer data
             rl_returns, key = collect_parallel_episode(
                 rl_env, key, rl_policy, buffer, horizon, policy_ids=rl_ids
             )
@@ -451,13 +434,7 @@ def train(
                 real_fitness if real_fitness is not None else critic_fitness
             )
 
-            # arms can only be scored on real generations - a surrogate
-            # generation skips the population rollout, so there is no ground
-            # truth and no h_reward to build the bootstrap arms from.
-            #   ""      the h-step bootstrap (measured, not used to select)
-            #   _noboot the same with gamma^H * Q dropped
-            #   _critic batch-averaged critic value (what selects when the
-            #           population rollout is skipped)
+            # "": h-step bootstrap, "_noboot": same w/o gamma^H*Q, "_critic": selects on surrogate gens; only scored on real gens
             arm_metrics: dict[str, float] = {}
             if real_fitness is not None:
                 arms = {
@@ -522,16 +499,21 @@ def train(
                         td3_state, actor_loss = actor_step(td3_state, batch)
                         actor_losses.append(actor_loss)
 
-                # PeVFA trains off the same buffer, but only on transitions
-                # whose generating policy is still in the ring - a resampled
-                # slot would pair a state with the wrong W.
+                # PeVFA only trains on transitions whose generating policy is still in the ring
                 for _ in range(int(cfg.pevfa_train_ratio * gen_env_steps)):
                     key, pv_key = jax.random.split(key)
                     pv_batch = buffer.sample(pv_key, cfg.batch_size)
                     ids = np.asarray(pv_batch["policy_id"][..., 0])
-                    if (ids < 0).all():
-                        continue
-                    weights = jnp.asarray(policy_table[np.maximum(ids, 0)])
+                    if (ids < 0).any():
+                        raise RuntimeError(
+                            "PeVFA sampled an untagged transition "
+                            f"(policy_id={ids.min()}). Every SEMARL rollout "
+                            "passes policy_ids, so this means the buffer was "
+                            "filled by something that does not - PeVFA would "
+                            "otherwise train on a state paired with the wrong "
+                            "policy, silently."
+                        )
+                    weights = jnp.asarray(policy_table[ids])
                     pevfa_state, pv_loss = pevfa_step(
                         pevfa_state,
                         td3_state.online.embedding,

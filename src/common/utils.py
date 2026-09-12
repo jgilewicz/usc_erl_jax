@@ -28,9 +28,7 @@ def h_step_bootstrap(
     dones: jax.Array,
     q_value: jax.Array,
 ) -> jax.Array:
-    # h_steps=0 is the pure-critic surrogate: no real reward, and nothing has
-    # terminated yet, so the bootstrap is unmasked. Guarded because the
-    # general path indexes survived[..., -1], which has no last element here.
+    # h_steps=0: unmasked bootstrap, since survived[..., -1] has no element here
     if h_steps == 0:
         return q_value
     survived = jnp.cumprod(1.0 - dones, axis=-1)

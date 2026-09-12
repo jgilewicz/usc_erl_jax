@@ -24,9 +24,7 @@ from modules.evo_module import CEM
 class ERLConfig:
     env_name: str = "Swimmer-v5"
     seed: int = 0
-    # env-step budget, not a generation count: once SEMARL skips population
-    # rollouts a generation stops being a fixed amount of interaction, so
-    # generations are not comparable across conditions and steps are.
+    # env-step budget, not a generation count: generation cost varies by algorithm
     step_budget: int = 1_000_000
     horizon: int | None = None  # None: use the env's max_episode_steps
     async_env: bool = True
