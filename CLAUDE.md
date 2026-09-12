@@ -44,17 +44,29 @@ scripts/               # post-hoc analysis, not shipped in the wheel
   elite membership is all selection consumes; chance is 0.5). Rank
   correlation is the looser secondary view, `abs_err` only watches scale
   drift.
-- Four fitness estimators are scored against the true return every
-  generation, by metric-name suffix: `` = the `h_steps` bootstrap in use,
-  `_noboot` = same with `γ^H·Q` dropped, `_critic` =
-  `E_{s~D}[Q(s, π_i(s))]` over a replay batch, `_h0` = its one-state
-  case. Adding an arm means adding a suffix to the `arms` dict in
+- Fitness estimators are scored against the true return, by metric-name
+  suffix: `` = the `h_steps` bootstrap, `_noboot` = same with `γ^H·Q`
+  dropped, `_critic` = `E_{s~D}[Q(s, π_i(s))]` over a replay batch,
+  `_pevfa` = the same but policy-conditioned. **Arms are measured, not
+  used to select** — adding one cannot change a baseline. Adding an arm
+  means adding a suffix to the `arms` dict in
   `semarl.py` and to `ARMS` in `surrogate_diagnostics.py` — the metric
   names and the report table are generated from those.
-- `collect_parallel_episode`'s `on_step` hook takes
-  `(step, states, reward, terminated, truncated, next_states)` — `states`
-  is there so an `H=0` bootstrap can be scored at the episode's first
-  state.
+- SEMARL runs **two vec envs**: `rl_env` (1 env, always a full `horizon`)
+  and `pop_env` (`pop_size`, skipped entirely on surrogate generations).
+  That skip is the env-step saving and it is why they cannot share a vec
+  env. Consequences: arms are only measurable on real generations (no
+  population rollout ⇒ no ground truth), and `num_updates` must scale with
+  `gen_env_steps`, never a fixed count.
+- `env_steps` is the x-axis for every performance claim — generations are
+  not comparable across `p_surr` once the rollout is split.
+- The buffer's `policy_id` column tags each transition with the policy
+  that generated it (PeVFA's TD target needs that policy's action at
+  `s'`). `collect_parallel_episode(..., policy_ids=...)`; callers that do
+  not track policies store `-1` and PeVFA skips those rows. Raw `W` lives
+  in a ring in `semarl.train`, sized `buffer_capacity // horizon`.
+- `notes.md` holds the measured results and the list of refuted
+  hypotheses. Check it before re-proposing a gating signal.
 
 ## Slurm
 

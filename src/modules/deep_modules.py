@@ -226,6 +226,77 @@ class ActorHead(eqx.Module):
         return jnp.tanh(self.out_layer(z)) * self.action_limit
 
 
+class PolicyEncoder(eqx.Module):
+    net: eqx.nn.Sequential
+
+    def __init__(
+        self,
+        num_params: int,
+        embed_dim: int = 64,
+        *,
+        key: jax.Array,
+        hidden_dim: int = 256,
+    ) -> None:
+        k1, k2 = jax.random.split(key)
+        self.net = eqx.nn.Sequential(
+            [
+                eqx.nn.Linear(num_params, hidden_dim, key=k1),
+                eqx.nn.LayerNorm(hidden_dim),
+                eqx.nn.Lambda(jax.nn.leaky_relu),
+                eqx.nn.Linear(hidden_dim, embed_dim, key=k2),
+                eqx.nn.LayerNorm(embed_dim),
+            ]
+        )
+
+    def __call__(self, flat_params: jax.Array) -> jax.Array:
+        return jnp.tanh(self.net(flat_params))
+
+
+class PeVFA(eqx.Module):
+    """Policy-extended value function: Q(s, a, chi(W)).
+
+    Unlike `Critic`, the policy is an *input*, so this can value a policy it
+    has never collected data from - which is what an EA population needs.
+    A plain Q(s, a) only sees a policy through its action at s.
+    """
+
+    policy_encoder: PolicyEncoder
+    q_net: eqx.nn.Sequential
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        num_params: int,
+        *,
+        key: jax.Array,
+        embed_dim: int = 64,
+        hidden_dims: tuple[int, int] = (400, 300),
+    ) -> None:
+        ek, k1, k2, k3 = jax.random.split(key, 4)
+        dim1, dim2 = hidden_dims
+        self.policy_encoder = PolicyEncoder(
+            num_params, embed_dim, key=ek, hidden_dim=dim1
+        )
+        self.q_net = eqx.nn.Sequential(
+            [
+                eqx.nn.Linear(state_dim + action_dim + embed_dim, dim1, key=k1),
+                eqx.nn.LayerNorm(dim1),
+                eqx.nn.Lambda(jax.nn.leaky_relu),
+                eqx.nn.Linear(dim1, dim2, key=k2),
+                eqx.nn.LayerNorm(dim2),
+                eqx.nn.Lambda(jax.nn.leaky_relu),
+                eqx.nn.Linear(dim2, 1, key=k3),
+            ]
+        )
+
+    def __call__(
+        self, state: jax.Array, action: jax.Array, flat_params: jax.Array
+    ) -> jax.Array:
+        chi = self.policy_encoder(flat_params)
+        return self.q_net(jnp.concatenate([state, action, chi], axis=-1))
+
+
 class SharedStateEmbedding(eqx.Module):
     embedding: eqx.nn.Sequential
 

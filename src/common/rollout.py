@@ -10,10 +10,8 @@ import numpy as np
 from common.replay_buffer import Buffer, Transition
 
 BatchPolicy = Callable[[jax.Array, jnp.ndarray], jnp.ndarray]
-# (step, states, reward, terminated, truncated, next_states)
 StepHook = Callable[
-    [int, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray],
-    None,
+    [int, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], None
 ]
 
 
@@ -38,12 +36,15 @@ def collect_parallel_episode(
     horizon: int,
     *,
     on_step: StepHook | None = None,
+    policy_ids: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jax.Array]:
     states, _ = vec_env.reset(
         seed=int(jax.random.randint(key, (), 0, 2**31 - 1))
     )
     states = jnp.asarray(states)
     num_envs = states.shape[0]
+    if policy_ids is None:
+        policy_ids = jnp.full((num_envs,), -1, dtype=jnp.int32)
     returns = jnp.zeros(num_envs)
     alive = jnp.ones(num_envs, dtype=bool)
     prev_done = np.zeros(num_envs, dtype=bool)
@@ -56,7 +57,7 @@ def collect_parallel_episode(
             returns, alive, reward, terminated, truncated
         )
         if on_step is not None:
-            on_step(step, states, reward, terminated, truncated, next_states)
+            on_step(step, reward, terminated, truncated, next_states)
 
         valid = ~prev_done
         if valid.any():
@@ -68,6 +69,7 @@ def collect_parallel_episode(
                     reward=reward[idx],
                     next_state=next_states[idx],
                     done=terminated[idx],
+                    policy_id=policy_ids[idx],
                 )
             )
 

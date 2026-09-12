@@ -6,7 +6,9 @@ defaults:
 
 name: semarl
 
-# The bootstrap horizon stays at erl.yaml's h_steps
+# erl.yaml's h_steps is inherited but inert here - it sizes the h-bootstrap
+# diagnostic arm only. Selection uses the true return on real generations
+# and the batch-averaged critic value on surrogate ones.
 p_surr_min: 0.0
 p_surr_max: 0.9
 p_beta: 3.0

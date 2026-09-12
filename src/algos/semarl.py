@@ -14,6 +14,11 @@ from jax.flatten_util import ravel_pytree
 import environments
 from common.replay_buffer import Buffer
 from common.rollout import collect_parallel_episode
+from common.pevfa import (
+    init_pevfa,
+    make_pevfa_step,
+    population_fitness,
+)
 from common.td3 import (
     TD3Config,
     TD3State,
@@ -35,17 +40,40 @@ from algos.erl import ERLConfig
 
 @dataclass(frozen=True)
 class SEMARLConfig(ERLConfig):
-    # The bootstrap horizon is fixed at ERL's h_steps
+    # Inherited but inert here: `theta` (p_surr replaces it) and `h_steps`,
+    # which now only sizes the h-bootstrap *diagnostic* arm - nothing about
+    # training changes if you move it. It would become live again only if
+    # a truncated-population generation were reintroduced as a third mode
+    # between "full real rollout" and "no rollout at all".
     p_surr_min: float = 0.0
     p_surr_max: float = 0.9
     p_beta: float = 3.0
     td_ema_decay: float = 0.1
 
+    # PeVFA: Q(s, a, chi(W)) trained alongside, scored as the `_pevfa` arm.
+    # Measured only - it does not select, so enabling it cannot change a
+    # baseline. Promote it once it beats `_critic` on elite_overlap.
+    pevfa_embed_dim: int = 64
+    pevfa_lr: float = 1e-3
+    pevfa_train_ratio: float = 0.25
 
+
+# the population and the RL actor run in separate vec envs so a surrogate
+# generation can skip the population rollout entirely - that skip is the
+# whole env-step saving, and it is impossible while both step in lockstep.
 @eqx.filter_jit
-def _step_policy(
+def _pop_policy(
     embedding: SharedStateEmbedding,
     pop_heads: ActorHead,
+    states: jnp.ndarray,
+) -> jnp.ndarray:
+    z = jax.vmap(embedding)(states)
+    return jax.vmap(lambda head, zi: head(zi))(pop_heads, z)
+
+
+@eqx.filter_jit
+def _rl_policy(
+    embedding: SharedStateEmbedding,
     actor: ActorHead,
     states: jnp.ndarray,
     key: jax.Array,
@@ -53,20 +81,14 @@ def _step_policy(
     exploration_noise: float,
     warmup: bool,
 ) -> jnp.ndarray:
-    z = jax.vmap(embedding)(states)
-    pop_actions = jax.vmap(lambda head, zi: head(zi))(pop_heads, z[:-1])
-
+    raw = jax.vmap(lambda s: actor(embedding(s)))(states)
     rl_key, warm_key = jax.random.split(key)
-    rl_raw = actor(z[-1])
     if warmup:
-        rl_action = jax.random.uniform(
-            warm_key, rl_raw.shape, minval=-action_limit, maxval=action_limit
+        return jax.random.uniform(
+            warm_key, raw.shape, minval=-action_limit, maxval=action_limit
         )
-    else:
-        noise = jax.random.normal(rl_key, rl_raw.shape) * exploration_noise
-        rl_action = jnp.clip(rl_raw + noise, -action_limit, action_limit)
-
-    return jnp.concatenate([pop_actions, rl_action[None]], axis=0)
+    noise = jax.random.normal(rl_key, raw.shape) * exploration_noise
+    return jnp.clip(raw + noise, -action_limit, action_limit)
 
 
 @eqx.filter_jit
@@ -77,7 +99,7 @@ def _deterministic_action(
 
 
 @eqx.filter_jit
-def _surrogate_fitness(
+def _bootstrap_fitness(
     embedding: SharedStateEmbedding,
     critic1: Critic,
     critic2: Critic,
@@ -89,6 +111,11 @@ def _surrogate_fitness(
     gamma: float,
     undiscount_scale: float,
 ) -> jnp.ndarray:
+    # ERL's h-step bootstrap. In SEMARL this is a *measured arm only* - it
+    # never selects (real generations use the true return, surrogate ones use
+    # _critic_fitness), so cfg.h_steps changes nothing about training here.
+    # Not the same thing as erl.py's identically-shaped _surrogate_fitness,
+    # which does drive selection.
     z = jax.vmap(embedding)(h_state)
     own_actions = jax.vmap(lambda head, zi: head(zi))(pop_heads, z)
     q1 = jax.vmap(critic1)(h_state, own_actions)[..., 0]
@@ -108,11 +135,10 @@ def _critic_fitness(
     states: jnp.ndarray,
     undiscount_scale: float,
 ) -> jnp.ndarray:
-    # E_{s~D}[min(Q1,Q2)(s, pi_i(s))] over a replay batch - the standard
-    # critic-only policy fitness in the ERL literature, and the honest
-    # SEMARL-style baseline. The H=0 arm is its degenerate one-state case:
-    # every individual starts from near-identical states, so that arm has to
-    # separate policies by their action at a single point.
+    # E_{s~D}[min(Q1,Q2)(s, pi_i(s))] over a replay batch. Averaging over the
+    # batch is what makes this work at all: scored at a single state it sits
+    # at chance (measured +0.011 rank_corr), because every individual starts
+    # from near-identical states and one action cannot separate policies.
     z = jax.vmap(embedding)(states)
 
     def head_value(head: ActorHead) -> jnp.ndarray:
@@ -132,9 +158,7 @@ def _reward_only_fitness(
     gamma: float,
     undiscount_scale: float,
 ) -> jnp.ndarray:
-    # the h-step surrogate with the gamma^H * Q term zeroed out: isolates how
-    # much of its accuracy is the accumulated real reward rather than the
-    # critic. The bootstrap's share of the value is exactly gamma^H.
+    # the h-step surrogate with the gamma^H * Q term zeroed out
     no_bootstrap = jnp.zeros(h_reward.shape[0])
     discounted = h_step_bootstrap(
         h_steps, gamma, h_reward, h_done, no_bootstrap
@@ -142,32 +166,13 @@ def _reward_only_fitness(
     return discounted * undiscount_scale
 
 
-@eqx.filter_jit
-def _critic_disagreement(
-    embedding: SharedStateEmbedding,
-    critic1: Critic,
-    critic2: Critic,
-    pop_heads: ActorHead,
-    states: jnp.ndarray,
-) -> jnp.ndarray:
-    # |Q1 - Q2| at the surrogate's own bootstrap query points, per individual:
-    # a free epistemic proxy that |TD| (global, on buffer actions) can't give.
-    z = jax.vmap(embedding)(states)
-    own_actions = jax.vmap(lambda head, zi: head(zi))(pop_heads, z)
-    q1 = jax.vmap(critic1)(states, own_actions)[..., 0]
-    q2 = jax.vmap(critic2)(states, own_actions)[..., 0]
-    return jnp.abs(q1 - q2)
-
-
-def _ranks(x: jnp.ndarray) -> np.ndarray:
-    return np.argsort(np.argsort(np.asarray(x)))
-
-
 def _rank_corr(a: jnp.ndarray, b: jnp.ndarray) -> float:
     # Spearman between two population-length fitness vectors.
-    if len(np.asarray(a)) < 3:
+    x, y = np.asarray(a), np.asarray(b)
+    if len(x) < 3:
         return float("nan")
-    return float(np.corrcoef(_ranks(a), _ranks(b))[0, 1])
+    rx, ry = np.argsort(np.argsort(x)), np.argsort(np.argsort(y))
+    return float(np.corrcoef(rx, ry)[0, 1])
 
 
 def _elite_overlap(a: jnp.ndarray, b: jnp.ndarray, parents: int) -> float:
@@ -228,8 +233,11 @@ def train(
             f"need 0 <= p_surr_min ({cfg.p_surr_min}) <= p_surr_max "
             f"({cfg.p_surr_max}) <= 1"
         )
-    vec_env = environments.make_vec_env(
-        cfg.env_name, cfg.pop_size + 1, async_=cfg.async_env, to_jax=True
+    rl_env = environments.make_vec_env(
+        cfg.env_name, 1, async_=cfg.async_env, to_jax=True
+    )
+    pop_env = environments.make_vec_env(
+        cfg.env_name, cfg.pop_size, async_=cfg.async_env, to_jax=True
     )
     buffer = Buffer(cfg.buffer_capacity, obs_dim, action_dim)
 
@@ -273,11 +281,34 @@ def train(
     critic_step, actor_step = make_td3_steps(
         td3_cfg, actor_optimizer, critic_optimizer
     )
-    # projects the discounted bootstrap onto real_fitness's undiscounted scale (see _surrogate_fitness).
+    # projects the discounted bootstrap onto real_fitness's undiscounted scale (see _bootstrap_fitness).
     undiscount_scale = horizon * (1.0 - cfg.gamma) / (1.0 - cfg.gamma**horizon)
+
+    pevfa_optimizer = optax.adam(cfg.pevfa_lr)
+    key, pevfa_key = jax.random.split(key)
+    pevfa_state = init_pevfa(
+        obs_dim,
+        action_dim,
+        num_params,
+        key=pevfa_key,
+        embed_dim=cfg.pevfa_embed_dim,
+        hidden_dims=cfg.critic_hidden_dims,
+        optimizer=pevfa_optimizer,
+    )
+    pevfa_step = make_pevfa_step(
+        cfg.gamma, cfg.tau, pevfa_optimizer, unravel_head
+    )
+    # Ring of raw policy params, indexed by the buffer's policy_id. Slots are
+    # consumed at exactly 1/horizon per env step whichever generation type
+    # runs, so sizing by buffer_capacity // horizon cannot wrap round onto a
+    # policy whose transitions are still live.
+    max_policies = cfg.buffer_capacity // horizon + 2 * (cfg.pop_size + 1)
+    policy_table = np.zeros((max_policies, num_params), np.float32)
+    policy_cursor = 0
 
     pending_injection: int | None = None
     td_rel_ema: float | None = None
+    env_steps = 0
     try:
         for generation in range(cfg.generations):
             key, ask_key = jax.random.split(key)
@@ -286,6 +317,15 @@ def train(
                 rl_flat, _ = ravel_pytree(td3_state.online.actor)
                 flat_pop = flat_pop.at[pending_injection].set(rl_flat)
             pop_heads = jax.vmap(unravel_head)(flat_pop)
+
+            rl_flat_now, _ = ravel_pytree(td3_state.online.actor)
+            n_new = cfg.pop_size + 1
+            slots = (policy_cursor + np.arange(n_new)) % max_policies
+            policy_table[slots[:-1]] = np.asarray(flat_pop)
+            policy_table[slots[-1]] = np.asarray(rl_flat_now)
+            policy_cursor = (policy_cursor + n_new) % max_policies
+            pop_ids = jnp.asarray(slots[:-1], dtype=jnp.int32)
+            rl_ids = jnp.asarray(slots[-1:], dtype=jnp.int32)
 
             warmup = len(buffer) < cfg.warmup_steps
             p_surr = (
@@ -298,15 +338,13 @@ def train(
             key, coin_key = jax.random.split(key)
             use_real_fitness = not bool(jax.random.bernoulli(coin_key, p_surr))
 
-            def policy(
+            def rl_policy(
                 act_key: jax.Array,
                 states: jnp.ndarray,
-                pop_heads: ActorHead = pop_heads,
                 warmup: bool = warmup,
             ) -> jnp.ndarray:
-                return _step_policy(
+                return _rl_policy(
                     td3_state.online.embedding,
-                    pop_heads,
                     td3_state.online.actor,
                     states,
                     act_key,
@@ -315,19 +353,21 @@ def train(
                     warmup,
                 )
 
-            # H/2 is scored too: whether the ranking has stopped moving by H
-            # measures truncation error, the part gamma^H says the critic is
-            # not responsible for - so it is the candidate gate signal if the
-            # critic arms come back empty.
-            h_half = max(cfg.h_steps // 2, 1)
-            snap_steps = {h_half, cfg.h_steps}
-            h_reward = np.zeros((cfg.pop_size + 1, cfg.h_steps), np.float32)
-            h_done = np.zeros((cfg.pop_size + 1, cfg.h_steps), np.float32)
+            def pop_policy(
+                act_key: jax.Array,
+                states: jnp.ndarray,
+                pop_heads: ActorHead = pop_heads,
+            ) -> jnp.ndarray:
+                return _pop_policy(
+                    td3_state.online.embedding, pop_heads, states
+                )
+
+            h_reward = np.zeros((cfg.pop_size, cfg.h_steps), np.float32)
+            h_done = np.zeros((cfg.pop_size, cfg.h_steps), np.float32)
             h_states: dict[int, jnp.ndarray] = {}
 
             def capture_h_step(
                 step: int,
-                states: jnp.ndarray,
                 reward: jnp.ndarray,
                 terminated: jnp.ndarray,
                 truncated: jnp.ndarray,
@@ -335,22 +375,38 @@ def train(
                 h_reward: np.ndarray = h_reward,
                 h_done: np.ndarray = h_done,
                 h_states: dict[int, jnp.ndarray] = h_states,
-                snap_steps: set[int] = snap_steps,
             ) -> None:
-                if step == 0:
-                    h_states[0] = states
                 if step >= cfg.h_steps:
                     return
                 h_reward[:, step] = np.asarray(reward)
                 h_done[:, step] = np.asarray(terminated)
-                if step + 1 in snap_steps:
-                    h_states[step + 1] = next_states
+                if step + 1 == cfg.h_steps:
+                    h_states[cfg.h_steps] = next_states
 
-            returns, key = collect_parallel_episode(
-                vec_env, key, policy, buffer, horizon, on_step=capture_h_step
+            # the RL actor always runs a full episode: it is the gradient
+            # learner and the only guaranteed source of fresh buffer data.
+            rl_returns, key = collect_parallel_episode(
+                rl_env, key, rl_policy, buffer, horizon, policy_ids=rl_ids
             )
-            real_fitness = returns[:-1]
-            rl_return = float(returns[-1])
+            rl_return = float(rl_returns[0])
+            gen_env_steps = horizon
+
+            # the population rollout is what a surrogate generation skips.
+            if use_real_fitness:
+                pop_returns, key = collect_parallel_episode(
+                    pop_env,
+                    key,
+                    pop_policy,
+                    buffer,
+                    horizon,
+                    on_step=capture_h_step,
+                    policy_ids=pop_ids,
+                )
+                real_fitness: jnp.ndarray | None = pop_returns
+                gen_env_steps += horizon * cfg.pop_size
+            else:
+                real_fitness = None
+            env_steps += gen_env_steps
 
             if warmup:
                 td_error = 0.0
@@ -380,95 +436,76 @@ def train(
                     + cfg.td_ema_decay * td_error_rel
                 )
 
-            def surrogate_at(
-                h: int, pop_heads: ActorHead = pop_heads
-            ) -> jnp.ndarray:
-                return _surrogate_fitness(
-                    td3_state.online.embedding,
-                    td3_state.online.critic1,
-                    td3_state.online.critic2,
-                    pop_heads,
-                    h_states[h][:-1],
-                    jnp.asarray(h_reward[:-1, :h]),
-                    jnp.asarray(h_done[:-1, :h]),
-                    h,
-                    cfg.gamma,
-                    undiscount_scale,
-                )
-
-            surrogate_fitness = surrogate_at(cfg.h_steps)
-            fitness = real_fitness if use_real_fitness else surrogate_fitness
-
-            # real_fitness is the true full-episode return every generation,
-            # so every arm below is scored for free against the truth:
-            #   H       the h-step bootstrap actually driving selection
-            #   h0      its degenerate one-state critic case
-            #   critic  batch-averaged critic value (the fair SEMARL baseline)
-            #   noboot  H with the gamma^H * Q term dropped (is the critic
-            #           contributing anything, or is it all real reward?)
             key, crit_key = jax.random.split(key)
-            s_half = surrogate_at(h_half)
-            arms = {
-                "": surrogate_fitness,
-                "_half": s_half,
-                "_h0": surrogate_at(0),
-                "_critic": _critic_fitness(
-                    td3_state.online.embedding,
-                    td3_state.online.critic1,
-                    td3_state.online.critic2,
-                    pop_heads,
-                    buffer.sample(crit_key, cfg.batch_size)["state"],
-                    undiscount_scale,
-                ),
-                "_noboot": _reward_only_fitness(
-                    jnp.asarray(h_reward[:-1]),
-                    jnp.asarray(h_done[:-1]),
-                    cfg.h_steps,
-                    cfg.gamma,
-                    undiscount_scale,
-                ),
-            }
-            # self-consistency, needs no ground truth: if the ranking still
-            # moves between H/2 and H the truncated evaluation has not
-            # settled, so the surrogate is unsafe *for reasons the critic
-            # cannot see*. Usable as a gate at collection time.
-            rank_stability = _rank_corr(s_half, surrogate_fitness)
-            elite_stability = _elite_overlap(
-                s_half, surrogate_fitness, cem.parents
-            )
-
-            arm_metrics: dict[str, float] = {}
-            for suffix, arm in arms.items():
-                arm_metrics[f"surrogate_abs_err{suffix}"] = float(
-                    jnp.mean(jnp.abs(real_fitness - arm))
-                )
-                arm_metrics[f"surrogate_rank_corr{suffix}"] = _rank_corr(
-                    real_fitness, arm
-                )
-                arm_metrics[f"surrogate_elite_overlap{suffix}"] = (
-                    _elite_overlap(real_fitness, arm, cem.parents)
-                )
-
-            # does per-individual critic disagreement flag
-            q_disagree = _critic_disagreement(
+            pv_states = buffer.sample(crit_key, cfg.batch_size)["state"]
+            critic_fitness = _critic_fitness(
                 td3_state.online.embedding,
                 td3_state.online.critic1,
                 td3_state.online.critic2,
                 pop_heads,
-                h_states[cfg.h_steps][:-1],
+                pv_states,
+                undiscount_scale,
             )
-            rank_shift = np.abs(
-                _ranks(real_fitness) - _ranks(surrogate_fitness)
-            ).astype(float)
-            q_disagree_rank_corr = _rank_corr(
-                q_disagree, jnp.asarray(rank_shift)
+            fitness = (
+                real_fitness if real_fitness is not None else critic_fitness
             )
+
+            # arms can only be scored on real generations - a surrogate
+            # generation skips the population rollout, so there is no ground
+            # truth and no h_reward to build the bootstrap arms from.
+            #   ""      the h-step bootstrap (measured, not used to select)
+            #   _noboot the same with gamma^H * Q dropped
+            #   _critic batch-averaged critic value (what selects when the
+            #           population rollout is skipped)
+            arm_metrics: dict[str, float] = {}
+            if real_fitness is not None:
+                arms = {
+                    "": _bootstrap_fitness(
+                        td3_state.online.embedding,
+                        td3_state.online.critic1,
+                        td3_state.online.critic2,
+                        pop_heads,
+                        h_states[cfg.h_steps],
+                        jnp.asarray(h_reward),
+                        jnp.asarray(h_done),
+                        cfg.h_steps,
+                        cfg.gamma,
+                        undiscount_scale,
+                    ),
+                    "_noboot": _reward_only_fitness(
+                        jnp.asarray(h_reward),
+                        jnp.asarray(h_done),
+                        cfg.h_steps,
+                        cfg.gamma,
+                        undiscount_scale,
+                    ),
+                    "_critic": critic_fitness,
+                    "_pevfa": population_fitness(
+                        pevfa_state.online,
+                        td3_state.online.embedding,
+                        pop_heads,
+                        flat_pop,
+                        pv_states,
+                        undiscount_scale,
+                    ),
+                }
+                for suffix, arm in arms.items():
+                    arm_metrics[f"surrogate_abs_err{suffix}"] = float(
+                        jnp.mean(jnp.abs(real_fitness - arm))
+                    )
+                    arm_metrics[f"surrogate_rank_corr{suffix}"] = _rank_corr(
+                        real_fitness, arm
+                    )
+                    arm_metrics[f"surrogate_elite_overlap{suffix}"] = (
+                        _elite_overlap(real_fitness, arm, cem.parents)
+                    )
 
             cem.tell(fitness, flat_pop)
             pending_injection = None
 
             critic_losses = []
             actor_losses = []
+            pevfa_losses = []
             if not warmup:
                 num_updates = int(
                     cfg.train_ratio * horizon * (cfg.pop_size + 1)
@@ -483,6 +520,24 @@ def train(
                     if step % cfg.policy_freq == 0:
                         td3_state, actor_loss = actor_step(td3_state, batch)
                         actor_losses.append(actor_loss)
+
+                # PeVFA trains off the same buffer, but only on transitions
+                # whose generating policy is still in the ring - a resampled
+                # slot would pair a state with the wrong W.
+                for _ in range(int(cfg.pevfa_train_ratio * gen_env_steps)):
+                    key, pv_key = jax.random.split(key)
+                    pv_batch = buffer.sample(pv_key, cfg.batch_size)
+                    ids = np.asarray(pv_batch["policy_id"][..., 0])
+                    if (ids < 0).all():
+                        continue
+                    weights = jnp.asarray(policy_table[np.maximum(ids, 0)])
+                    pevfa_state, pv_loss = pevfa_step(
+                        pevfa_state,
+                        td3_state.online.embedding,
+                        pv_batch,
+                        weights,
+                    )
+                    pevfa_losses.append(pv_loss)
 
                 champion_idx = int(jnp.argmax(fitness))
                 champion_head = unravel_head(flat_pop[champion_idx])
@@ -510,13 +565,16 @@ def train(
                 "p_surr": p_surr,
                 "h_step": float(cfg.h_steps),
                 **arm_metrics,
-                "surrogate_rank_stability": rank_stability,
-                "surrogate_elite_stability": elite_stability,
-                "q_disagree_mean": float(jnp.mean(q_disagree)),
-                "q_disagree_rank_corr": q_disagree_rank_corr,
-                "fitness_real_mean": float(jnp.mean(real_fitness)),
-                "fitness_surrogate_mean": float(jnp.mean(surrogate_fitness)),
+                "env_steps": float(env_steps),
+                "env_steps_gen": float(gen_env_steps),
+                "fitness_real_mean": float(jnp.mean(real_fitness))
+                if real_fitness is not None
+                else float("nan"),
+                "fitness_critic_mean": float(jnp.mean(critic_fitness)),
                 "rl_return": rl_return,
+                "pevfa_loss": float(np.mean(pevfa_losses))
+                if pevfa_losses
+                else 0.0,
                 "critic_loss": float(np.mean(critic_losses))
                 if critic_losses
                 else 0.0,
@@ -524,19 +582,20 @@ def train(
                 if actor_losses
                 else 0.0,
             }
+            if arm_metrics:
+                arms_str = "elite(H/nobo/crit)=" + "/".join(
+                    f"{arm_metrics[f'surrogate_elite_overlap{s}']:.2f}"
+                    for s in ("", "_noboot", "_critic")
+                )
+            else:
+                arms_str = "elite(-) surrogate gen, no ground truth"
             print(
-                f"gen {generation:4d} | buffer {len(buffer):7d} | "
-                f"fitness[{'real' if use_real_fitness else 'surrogate'}] "
+                f"gen {generation:4d} | steps {env_steps:9d} | "
+                f"fitness[{'real' if use_real_fitness else 'critic'}] "
                 f"best={metrics['fitness_best']:8.1f} "
                 f"mean={metrics['fitness_mean']:8.1f} | "
                 f"td={td_error:7.3f} tdrel={td_error_rel:6.3f} "
-                f"p_surr={p_surr:.2f} | "
-                f"rankcorr(H/0/crit/nobo)="
-                f"{arm_metrics['surrogate_rank_corr']:+.2f}/"
-                f"{arm_metrics['surrogate_rank_corr_h0']:+.2f}/"
-                f"{arm_metrics['surrogate_rank_corr_critic']:+.2f}/"
-                f"{arm_metrics['surrogate_rank_corr_noboot']:+.2f} "
-                f"stab={rank_stability:+.2f} | "
+                f"p_surr={p_surr:.2f} | {arms_str} | "
                 f"rl_return={rl_return:8.1f} | "
                 f"critic_loss={metrics['critic_loss']:8.4f} "
                 f"actor_loss={metrics['actor_loss']:8.4f}"
@@ -544,7 +603,8 @@ def train(
             if on_generation is not None:
                 on_generation(metrics)
     finally:
-        vec_env.close()
+        rl_env.close()
+        pop_env.close()
 
     return td3_state
 

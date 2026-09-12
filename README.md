@@ -46,21 +46,71 @@ just train erl HalfCheetah-v5
 ## SEMARL
 
 [SEMARL](https://dl.acm.org/doi/10.1145/3795095.3805146) — ERL backbone
-(shared embedding, CEM, parallel rollout, genetic soft update) where the
-*frequency* of surrogate evaluation adapts to critic error. The bootstrap
-horizon stays fixed at ERL's `h_steps`; what replaces ERL's fixed `theta`
-coin flip is an adaptive `p_surr`. Impl: `src/algos/semarl.py`, config:
+(shared embedding, CEM, genetic soft update) where the *frequency* of
+surrogate evaluation adapts to critic error: an adaptive `p_surr` replaces
+ERL's fixed `theta` coin flip. Impl: `src/algos/semarl.py`, config:
 `src/conf/algorithm/semarl.yaml` (inherits `erl.yaml`).
 
-Earlier versions adapted `H` instead. That was dropped: measured on
-HalfCheetah, `rank_corr` rose monotonically with `H` (h_max +0.79 vs
-h_min +0.27, h_max better in 99% of generations), so there was no critic
-quality at which a short `H` paid — and since the rollout runs the full
-`horizon` either way, a short `H` saved nothing to trade for it.
+**Split rollout.** The RL actor and the population run in *separate* vec
+envs. The actor always runs a full `horizon` (it is the gradient learner
+and the only guaranteed source of fresh buffer data); the population
+rollout is what a surrogate generation skips entirely. That skip is the
+whole env-step saving — 11 000 → 1 000 steps per generation at
+`pop_size=10` — and it is impossible while both step in lockstep. On a
+surrogate generation selection runs on the batch-averaged critic value.
 
-All tuning to date is HalfCheetah-only: `p_beta = 3.0` is set against
-its `|TD|_rel ≈ 0.21`. The cross-env portability that the `mean|r|`
-normalization is *for* has not been tested on a second env yet.
+`num_updates` scales with steps actually collected, not a fixed count:
+otherwise a surrogate generation silently inflates the update-to-data
+ratio ~11× and reads as "the gate helped".
+
+```text
+CEM.ask() ──► 10 × ActorHead over Z(s)
+                   │
+      p_surr = p_min + (p_max−p_min)·exp(−p_beta·|TD|_rel_ema)
+                   │   ← from the PREVIOUS generation's EMA: the
+                   │     rollout itself depends on this decision
+        ┌──────────┴──────────┐
+1−p_surr│                     │p_surr
+        ▼                     ▼
+┌─────────────────┐  ┌─────────────────┐
+│ REAL            │  │ SURROGATE       │
+├─────────────────┤  ├─────────────────┤
+│ rl_env   1×1000 │  │ rl_env   1×1000 │ ← always: gradient learner,
+│ pop_env 10×1000 │  │ pop_env skipped │   only guaranteed fresh data
+├─────────────────┤  ├─────────────────┤
+│  11 000 steps   │  │   1 000 steps   │ ← the 11× saving
+├─────────────────┤  ├─────────────────┤
+│ f = true return │  │ f = E[Q(s,π_i)] │
+│ arms scored ✓   │  │ no ground truth │
+└────────┬────────┘  └────────┬────────┘
+         └──────────┬─────────┘
+                    ▼
+           CEM.tell(f) ──► top-5 of 10 ──► new μ, Σ
+                    │
+                    ▼
+     TD3 updates × (train_ratio · steps collected this gen)
+                    │
+                    ▼
+     genetic_soft_update: champion head ──► RL actor
+```
+
+The surrogate is not free of the rollout it skips — it is trained on what
+that rollout collects:
+
+```text
+  population rollouts ──► buffer ──► critic ──► surrogate fitness
+         ▲                                              │
+         │                                              ▼
+         └────────────── CEM selection ◄────────────────┘
+              (only on REAL generations)
+```
+
+Raising `p_surr` cuts the left edge of that loop: fewer population
+rollouts ⇒ the buffer sees only the RL actor's distribution ⇒ the critic
+loses the ability to rank *other* policies. So `p_surr` is bounded by the
+critic's appetite for policy-diverse data, not by fitness accuracy — that
+is the open question the `p_surr` sweep is meant to answer, not an
+assumption baked into the code.
 
 - **Relative TD error**: each generation, on a fresh replay batch,
   `mean |r + γ(1−d)·min(Q1',Q2') − min(Q1,Q2)|` (`clipped_double_q`,
@@ -68,56 +118,65 @@ normalization is *for* has not been tested on a second env yet.
   (`relative_td_error`). `|TD|` is a per-step residual, so the
   denominator has to be per-step too — `mean|Q|` is a discounted *return*,
   which buries a factor of `(1−γ)` in the ratio and shrinks it further as
-  `Q` grows over training. Smoothed into `td_error_rel_ema`
-  (`td_ema_decay`).
+  `Q` grows over training. Smoothed into `td_error_rel_ema`.
 - **Adaptive p_surr**:
   `p_surr = p_surr_min + (p_surr_max−p_surr_min)·exp(−p_beta·|TD|_rel_ema)`
-  (`adaptive_p_surr`), taken from the previous generation's EMA — the
-  choice has to precede collection so it can gate the rollout once the
-  population rollout is truncated. Accurate critic → more surrogate
-  generations; noisy critic → fall back to real evaluation.
-- **Metrics**: `td_error` (raw, informational) / `td_error_rel` /
-  `td_error_rel_ema` / `p_surr`, plus the per-generation agreement with
-  the true full-episode return for four fitness estimators, all scored
-  for free every generation (suffix on each metric name):
-  - `` (none) — the `h_steps` bootstrap actually driving selection.
-  - `_noboot` — the same, with the `γ^H·Q` term dropped. Isolates how
-    much of the surrogate is accumulated real reward rather than critic:
-    the bootstrap's share of the value is exactly `γ^H` (8.1% at γ=0.99,
-    H=250). If this matches the `H` arm, the critic contributes nothing.
-  - `_critic` — `E_{s~D}[min(Q1,Q2)(s, π_i(s))]` over a replay batch, the
-    standard critic-only fitness and the honest SEMARL-style baseline.
-  - `_h0` — its degenerate one-state case (bootstrap at the episode's
-    first state). Kept for contrast: every individual starts from
-    near-identical states, so this arm must separate policies by their
-    action at a single point, and lands near chance.
-
-  For each arm:
-  - `surrogate_elite_overlap*` — fraction of CEM's top-`parents` set the
-    surrogate gets right. The headline number: `_cem_tell` keeps
-    `argsort(-scores)[:parents]` and discards everything else, so this is
-    all selection consumes. Chance is 0.5, not 0.
-  - `surrogate_rank_corr*` — Spearman over the whole population; looser,
-    also scores pairs selection never looks at.
-  - `surrogate_abs_err*` — kept only to watch surrogate/real scale drift.
-- `q_disagree_mean` / `q_disagree_rank_corr` — per-individual `|Q1−Q2|`
-  at the surrogate's own bootstrap states, and its correlation with how
-  far that individual is misranked. Logged but unused: it is the
-  candidate gating signal for uncertainty-gated `p_surr`, and this says
-  whether it carries anything before it is wired in.
+  (`adaptive_p_surr`), from the previous generation's EMA — the choice has
+  to precede collection, since it decides whether the population rolls out
+  at all.
+- **Fitness estimators**, scored against the true return by metric-name
+  suffix. Only measurable on real generations: a surrogate generation has
+  no population rollout, so no ground truth and no `h_reward`.
+  - `` (none) — the `h_steps` bootstrap.
+  - `_noboot` — the same with `γ^H·Q` dropped. The bootstrap's share of
+    the value is exactly `γ^H` (8.1% at γ=0.99, H=250), so if this matches
+    the `H` arm the critic contributes nothing.
+  - `_critic` — `E_{s~D}[min(Q1,Q2)(s, π_i(s))]` over a replay batch.
+    What selects when the population rollout is skipped, at zero env
+    steps. Averaging over the batch is what makes it work: scored at a
+    single state it sits at chance.
+  - `_pevfa` — `E_{s~D}[Q(s, π_i(s), χ(W_i))]`, a policy-extended value
+    function (`src/common/pevfa.py`, `modules.PeVFA`) trained by TD
+    alongside TD3. The policy is an *input*, so it can value a population
+    member it never collected from; a plain `Q(s,a)` only sees a policy
+    through its action at `s`. **Measured only — it does not select**, so
+    it cannot change a baseline. Promote it past `_critic` only if it wins
+    on `elite_overlap`.
+  - metrics per arm: `surrogate_elite_overlap*` (headline — `_cem_tell`
+    keeps `argsort(-scores)[:parents]` and discards the rest, so elite
+    membership is all selection consumes; **chance is 0.5**),
+    `surrogate_rank_corr*` (looser, scores pairs selection ignores),
+    `surrogate_abs_err*` (scale drift only).
+- `env_steps` / `env_steps_gen` — cumulative and per-generation
+  interaction cost. The x-axis for every performance claim.
+- **Policy tagging.** PeVFA's TD target uses the action of the policy that
+  *generated* the transition, so the buffer carries a `policy_id` column
+  and `collect_parallel_episode` takes `policy_ids`. Raw `W` lives in a
+  ring sized `buffer_capacity // horizon`: slots are consumed at exactly
+  `1/horizon` per env step whichever generation type runs, so the ring
+  cannot wrap onto a policy whose transitions are still live. Callers that
+  do not track policies (ERL) store `-1` and those rows are skipped.
 - `p_beta` is a dimensionless sensitivity constant on the relative error,
   meant to be shared across envs (unlike a raw-`|TD|` threshold).
-- `theta` and `h_steps` are inherited from `ERLConfig`; SEMARL uses
-  `h_steps` as its fixed horizon and ignores `theta` (`p_surr` replaces
-  it), so a SEMARL run's logged `theta` is inert.
-- The population rollout still runs the full `horizon` (feeds the buffer),
-  so `p_surr` currently trades surrogate bias/variance, not env steps —
-  the two-call rollout split (RL actor full, population to `h_steps` on
-  surrogate generations) is the next step for actual interaction savings.
+- **Two inherited-but-inert params.** `theta` (`p_surr` replaces it) and
+  `h_steps`, which in SEMARL sizes the h-bootstrap *diagnostic* arm only —
+  nothing about training changes if you move it, because the bootstrap
+  never selects here. Both are live in `erl.py`. `h_steps` would become
+  live again only if a truncated-population generation were reintroduced
+  as a third mode between "full real rollout" and "no rollout at all".
+
+**Measured on HalfCheetah, see `notes.md` for the numbers.** Adapting `H`
+was dropped (`rank_corr` rises monotonically with `H`). The adaptive gate
+itself is so far indistinguishable from a fixed `p_surr`: no critic-derived
+signal (`|TD|_rel`, `|Q1−Q2|`, H/2-vs-H rank stability) predicts surrogate
+quality on either arm. All tuning is HalfCheetah-only — `p_beta = 3.0` is
+set against its `|TD|_rel ≈ 0.21`, and the cross-env portability the
+`mean|r|` normalization is *for* is still untested.
+
 
 ```bash
 just train semarl HalfCheetah-v5
-# validate the adaptation from a finished run's metrics:
+# cost/accuracy frontier from a finished run's metrics:
 uv run python scripts/surrogate_diagnostics.py --wandb evo_rl/triage_erl/<run_id>
 ```
 
@@ -125,13 +184,12 @@ uv run python scripts/surrogate_diagnostics.py --wandb evo_rl/triage_erl/<run_id
 
 - `justfile`: `install`, `test`, `lint`/`lint-check`, `types`, `check`,
   `train`, `train-all`.
-- `scripts/surrogate_diagnostics.py`: post-hoc — does relative `|TD|`
-  predict a worse surrogate, does `p_surr` open when the surrogate is
-  good, how the four fitness-estimator arms compare (including whether
-  dropping the bootstrap changes anything), and whether `|Q1−Q2|` flags
-  the misranked individuals (raw + trend-removed Spearman); flags a
-  saturated `p_surr` — constant, *or* pinned against a rail, which is the
-  same non-result and easy to miss in the range alone.
+- `scripts/surrogate_diagnostics.py`: post-hoc cost/accuracy frontier —
+  each estimator's elite overlap against its measured cost per generation
+  (taken from `env_steps_gen`, not assumed), whether dropping the
+  bootstrap changes anything, and how the arms decay as CEM converges.
+  Flags a saturated `p_surr` — constant, *or* pinned against a rail, which
+  is the same non-result and easy to miss in the range alone.
 - `slurm_run_array.sh`: array job, one `(algorithm, seed)` task per
   index; 6 algos × 5 seeds = 30 tasks for one `TARGET_ENV`.
 
