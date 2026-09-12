@@ -309,8 +309,9 @@ def train(
     pending_injection: int | None = None
     td_rel_ema: float | None = None
     env_steps = 0
+    generation = 0
     try:
-        for generation in range(cfg.generations):
+        while env_steps < cfg.step_budget:
             key, ask_key = jax.random.split(key)
             flat_pop = cem.ask(ask_key)
             if pending_injection is not None:
@@ -602,6 +603,7 @@ def train(
             )
             if on_generation is not None:
                 on_generation(metrics)
+            generation += 1
     finally:
         rl_env.close()
         pop_env.close()

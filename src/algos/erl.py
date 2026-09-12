@@ -24,7 +24,10 @@ from modules.evo_module import CEM
 class ERLConfig:
     env_name: str = "Swimmer-v5"
     seed: int = 0
-    generations: int = 200
+    # env-step budget, not a generation count: once SEMARL skips population
+    # rollouts a generation stops being a fixed amount of interaction, so
+    # generations are not comparable across conditions and steps are.
+    step_budget: int = 1_000_000
     horizon: int | None = None  # None: use the env's max_episode_steps
     async_env: bool = True
 
@@ -209,8 +212,13 @@ def train(
     undiscount_scale = horizon * (1.0 - cfg.gamma) / (1.0 - cfg.gamma**horizon)
 
     pending_injection: int | None = None
+    env_steps = 0
+    generation = 0
+    # ERL never truncates: every generation is the same fixed cost.
+    gen_env_steps = horizon * (cfg.pop_size + 1)
     try:
-        for generation in range(cfg.generations):
+        while env_steps < cfg.step_budget:
+            env_steps += gen_env_steps
             key, ask_key = jax.random.split(key)
             flat_pop = cem.ask(ask_key)
             if pending_injection is not None:
@@ -317,6 +325,8 @@ def train(
 
             metrics = {
                 "generation": float(generation),
+                "env_steps": float(env_steps),
+                "env_steps_gen": float(gen_env_steps),
                 "buffer_size": float(len(buffer)),
                 "fitness_best": float(jnp.max(fitness)),
                 "fitness_mean": float(jnp.mean(fitness)),
@@ -342,6 +352,7 @@ def train(
             )
             if on_generation is not None:
                 on_generation(metrics)
+            generation += 1
     finally:
         vec_env.close()
 

@@ -24,11 +24,13 @@ def _erl_kwargs(cfg: DictConfig) -> dict[str, Any]:
     algo_cfg = cfg.algorithm
     horizon = int(algo_cfg.horizon)
     pop_size = int(algo_cfg.pop_size)
-    generations = max(cfg.total_steps // (horizon * (pop_size + 1)), 1)
     return dict(
         env_name=cfg.env.id,
         seed=cfg.seed,
-        generations=generations,
+        # a budget, not a generation count - SEMARL's generations cost
+        # different amounts, so total_steps means the same thing everywhere
+        # only if the loop spends it rather than counting iterations.
+        step_budget=int(cfg.total_steps),
         horizon=horizon,
         async_env=algo_cfg.async_env,
         pop_size=pop_size,
@@ -74,6 +76,9 @@ def _run_semarl(cfg: DictConfig) -> float:
         p_surr_max=algo_cfg.p_surr_max,
         p_beta=algo_cfg.p_beta,
         td_ema_decay=algo_cfg.td_ema_decay,
+        pevfa_embed_dim=int(algo_cfg.pevfa_embed_dim),
+        pevfa_lr=algo_cfg.pevfa_lr,
+        pevfa_train_ratio=algo_cfg.pevfa_train_ratio,
     )
     td3_state = train_semarl(semarl_cfg, on_generation=wandb.log)
     return evaluate_semarl_actor(
@@ -116,8 +121,13 @@ def run_training(cfg: DictConfig) -> float:
             "dict[str, Any]", OmegaConf.to_container(cfg, resolve=True)
         ),
     )
+    dispatch = {"erl": _run_erl, "semarl": _run_semarl}
+    if cfg.algorithm.name in dispatch:
+        # generations cost different amounts once the rollout is split, so
+        # every curve has to be read against interaction, not iteration.
+        wandb.define_metric("env_steps")
+        wandb.define_metric("*", step_metric="env_steps")
     try:
-        dispatch = {"erl": _run_erl, "semarl": _run_semarl}
         runner = dispatch.get(cfg.algorithm.name, _run_sb3)
         eval_reward = runner(cfg)
     finally:

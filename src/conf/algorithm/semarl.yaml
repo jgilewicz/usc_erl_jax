@@ -13,3 +13,10 @@ p_surr_min: 0.0
 p_surr_max: 0.9
 p_beta: 3.0
 td_ema_decay: 0.1
+
+# PeVFA Q(s, a, chi(W)): trained by TD alongside, scored as the `_pevfa`
+# arm only - it does not select. pevfa_train_ratio is gradient steps per
+# env step collected; it is the first thing to cut if generations are slow.
+pevfa_embed_dim: 64
+pevfa_lr: 1e-3
+pevfa_train_ratio: 0.25
