@@ -133,8 +133,11 @@ def run_training(cfg: DictConfig) -> float:
     try:
         runner = dispatch.get(cfg.algorithm.name, _run_sb3)
         eval_reward = runner(cfg)
-    finally:
-        run.finish()
+    except BaseException:
+        # a bare finally: run.finish() logged crashed runs as "finished"
+        run.finish(exit_code=1)
+        raise
+    run.finish()
 
     if cfg.result_file is not None:
         Path(cfg.result_file).write_text(

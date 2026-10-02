@@ -640,7 +640,8 @@ def train(
                 if actor_losses
                 else 0.0,
             }
-            if arm_metrics:
+            # not `if arm_metrics`: crossgen_* fills it on surrogate generations too
+            if real_fitness is not None:
                 arms_str = "elite(H/nobo/crit)=" + "/".join(
                     f"{arm_metrics[f'surrogate_elite_overlap{s}']:.2f}"
                     for s in ("", "_noboot", "_critic")
