@@ -44,22 +44,23 @@ RUN_NAME="${ALGO}_${ENV_SLUG}_seed${SEED}"
 
 echo "Task ${TASK_ID} | ${ALGO} | ${ENV} | seed ${SEED}"
 
-# no `module load`: uv supplies Python, jax[cuda12] wheels bundle CUDA
-command -v uv >/dev/null || {
-  echo "uv not on PATH in the batch shell - install it or add ~/.local/bin to PATH in ~/.bash_profile" >&2
-  exit 1
-}
-
 # TODO: set this to the cluster checkout path for usc_erl_jax
 PROJECT_DIR="/path/to/usc_erl_jax"
 cd "${PROJECT_DIR}"
+# no `module load`: the venv carries Python, jax[cuda12] wheels bundle CUDA.
+# venv binaries, not uv's runner: parallel array tasks race on the shared uv cache
+VENV="${PROJECT_DIR}/.venv/bin"
+[[ -x "${VENV}/python" ]] || {
+  echo "no venv at ${VENV} - run 'uv sync' in ${PROJECT_DIR} on the login node before submitting" >&2
+  exit 1
+}
 
 : "${WANDB_API_KEY:?export WANDB_API_KEY before submitting}"
 export WANDB_MODE=offline
 export WANDB_DIR="${PROJECT_DIR}/wandb_logs"
 mkdir -p logs "${WANDB_DIR}"
 
-if uv run python -m train \
+if "${VENV}/python" -m train \
   algorithm="${ALGO}" \
   seed="${SEED}" \
   env.id="${ENV}" \
@@ -71,7 +72,7 @@ if uv run python -m train \
   "wandb.tags=[${ALGO},${ENV_SLUG}]" \
   hydra.run.dir="outputs/${RUN_NAME}"; then
   for d in "${WANDB_DIR}"/wandb/offline-run-*; do
-    [[ -d "$d" ]] && wandb sync "$d"
+    [[ -d "$d" ]] && "${VENV}/wandb" sync "$d"
   done
 else
   echo "ERROR: ${RUN_NAME} failed" >&2
