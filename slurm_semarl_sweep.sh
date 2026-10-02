@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -l
 # SEMARL p_surr sweep: one (condition, seed) pair per array task, one TARGET_ENV.
 # 8 conditions x 3 seeds = 24 tasks.
 #
@@ -50,8 +50,11 @@ RUN_NAME="${NAME}_${ENV_SLUG}_s${SEED}"
 
 echo "Task ${TASK_ID} | ${NAME} | ${ENV} | seed ${SEED}"
 
-module load Python/3.12.3-GCCcore-13.3.0
-module load CUDA/12.6.0
+# no `module load`: uv supplies Python, jax[cuda12] wheels bundle CUDA
+command -v uv >/dev/null || {
+  echo "uv not on PATH in the batch shell - install it or add ~/.local/bin to PATH in ~/.bash_profile" >&2
+  exit 1
+}
 
 cd "${PROJECT_DIR}"
 

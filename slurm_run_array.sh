@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -l
 # Array job: one (algorithm, seed) pair per task, for a single TARGET_ENV.
 # 6 algorithms x 5 seeds = 30 tasks.
 #
@@ -44,8 +44,11 @@ RUN_NAME="${ALGO}_${ENV_SLUG}_seed${SEED}"
 
 echo "Task ${TASK_ID} | ${ALGO} | ${ENV} | seed ${SEED}"
 
-module load Python/3.12.3-GCCcore-13.3.0
-module load CUDA/12.6.0
+# no `module load`: uv supplies Python, jax[cuda12] wheels bundle CUDA
+command -v uv >/dev/null || {
+  echo "uv not on PATH in the batch shell - install it or add ~/.local/bin to PATH in ~/.bash_profile" >&2
+  exit 1
+}
 
 # TODO: set this to the cluster checkout path for usc_erl_jax
 PROJECT_DIR="/path/to/usc_erl_jax"
