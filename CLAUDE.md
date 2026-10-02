@@ -47,8 +47,10 @@ scripts/               # post-hoc analysis, not shipped in the wheel
 - Fitness estimators are scored against the true return, by metric-name
   suffix: `` = the `h_steps` bootstrap, `_noboot` = same with `γ^H·Q`
   dropped, `_critic` = `E_{s~D}[Q(s, π_i(s))]` over a replay batch.
-  **Arms are measured, not used to select** — adding one cannot change a
-  baseline. Adding an arm means adding a suffix to the `arms` dict in
+  `_ens` = the same averaged over `ensemble_size` critics
+  (`common/critic_ensemble.py`, a port of usc_erl's `EnsembleModule`;
+  0 = off). **Arms are measured, not used to select** — adding one cannot
+  change a baseline. Adding an arm means adding a suffix to the `arms` dict in
   `semarl.py` and to `ARMS` in `surrogate_diagnostics.py` — the metric
   names and the report table are generated from those.
 - SEMARL runs **two vec envs**: `rl_env` (1 env, always a full `horizon`)
@@ -76,8 +78,8 @@ placeholder path). See README for the full sbatch sweep loop.
 
 `slurm_semarl_sweep.sh` is array-job-per-`(condition, seed)`: ERL, SEMARL
 at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive SEMARL, TD3, and a
-`p_surr=0` run with `dump_path` set (condition 8, tasks 24–26) — 9 × 3 =
-27 tasks, tagged `sweep-v2`. Earlier `p_surr` runs are confounded by
+`p_surr=0` run with `dump_path` and a 5-critic ensemble (condition 8,
+tasks 24–26) — 9 × 3 = 27 tasks, tagged `sweep-v2`. Earlier `p_surr` runs are confounded by
 replay ratio (`num_updates` did not scale with `gen_env_steps`). Jobs run
 `.venv/bin/python` directly — `uv sync` on the login node first; parallel
 `uv run` calls race on the shared uv cache. Takes `PROJECT_DIR` from the

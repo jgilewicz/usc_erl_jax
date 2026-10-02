@@ -41,6 +41,7 @@ ARMS = {
     "": "H (h-step)",
     "_noboot": "H, no bootstrap",
     "_critic": "critic, batch-avg",
+    "_ens": "critic ensemble mean",
 }
 
 
@@ -144,6 +145,7 @@ def _compare_arms(d: dict[str, np.ndarray]) -> None:
         "": full,
         "_noboot": full,
         "_critic": actor_only,
+        "_ens": actor_only,
     }
     for suffix, label in ARMS.items():
         vals = [

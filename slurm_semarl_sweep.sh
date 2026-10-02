@@ -41,7 +41,7 @@ CONDITIONS=(
   "semarl-adapt|algorithm=semarl"
   "td3|algorithm=td3"
   # p=0: every generation real, so every one is a benchmark sample
-  "semarl-dump|algorithm=semarl algorithm.p_surr_min=0.0 algorithm.p_surr_max=0.0 algorithm.dump_path=population.npz"
+  "semarl-dump|algorithm=semarl algorithm.p_surr_min=0.0 algorithm.p_surr_max=0.0 algorithm.dump_path=population.npz algorithm.ensemble_size=5"
 )
 SEEDS=(0 1 2)
 N_SEEDS=${#SEEDS[@]}

@@ -20,15 +20,17 @@ bootstrap that costs H env steps per individual. The learned models use the
                  one with a predictive std (cf. DTS-CMA-ES)
 each on `w` (raw head weights) and `fp` (actions on fixed probe states).
 
-Part 2 - per-individual evaluation, on the critic (the learned models sit
-at chance, so their selection numbers say nothing). Spend k real rollouts
+Part 2 - per-individual evaluation, on the critic and the ensemble mean
+(the learned models sit at chance, so their selection numbers say nothing). Spend k real rollouts
 on chosen individuals, keep the critic for the rest (offset-calibrated on
 the k true values), select top-`parents`. `oracle` is the best k-subset in
 hindsight - the ceiling any selection criterion can reach. Compared at equal cost against SEMARL's
 per-generation coin: k/pop * 1.0 + (1 - k/pop) * elite_overlap(surrogate).
-`unc - boundary` is what uncertainty adds over picking the individuals the
-surrogate ranks closest to the elite cut - the number a paper about
-uncertainty has to show is positive.
+With an `ensemble` in the dump, three uncertainty criteria pick the k:
+`std` across members, `cv` (sigma / (sqrt|mu| + 1), the usc_erl gate) and
+`flip` - the share of members that put i on the other side of the elite
+cut. Uncertainty counts only if it beats both `boundary` (no uncertainty)
+and the SEMARL coin; the verdict line checks the coin on every seed.
 
     uv run python scripts/surrogate_benchmark.py outputs/*/population.npz
 """
@@ -53,6 +55,9 @@ RANK_LR = 0.1
 RANK_L2 = 1e-3
 RANDOM_DRAWS = 20
 MIN_REL_SD = 1e-3
+SELECTION_SURROGATES = ("critic", "ens-mean")
+UNCERTAINTY = ("std", "cv", "flip")
+CRITERIA = ("semarl", "random", "boundary", *UNCERTAINTY, "oracle")
 
 
 def _elite(scores: np.ndarray, parents: int) -> set[int]:
@@ -186,43 +191,59 @@ def _boundary(est: np.ndarray, k: int, parents: int) -> np.ndarray:
     return np.argsort(np.abs(ranks - (parents - 0.5)))[:k]
 
 
+def _flip(est: np.ndarray, ens: np.ndarray, k: int, parents: int) -> np.ndarray:
+    # P(elite cut crossed): share of members that disagree with `est` on
+    # whether i is in the top-`parents`; ties go to the individual closest to
+    # the cut, so with a unanimous ensemble this degrades to `boundary`
+    ref = np.zeros(len(est), bool)
+    ref[np.argsort(-est)[:parents]] = True
+    member_elite = np.zeros(ens.shape, bool)
+    for m in range(ens.shape[1]):
+        member_elite[np.argsort(-ens[:, m])[:parents], m] = True
+    p_flip = (member_elite != ref[:, None]).mean(1)
+    dist = np.abs(np.argsort(np.argsort(-est)) - (parents - 0.5))
+    return np.lexsort((dist, -p_flip))[:k]
+
+
+def _uncertainty_choices(
+    est: np.ndarray, ens: np.ndarray, k: int, parents: int
+) -> dict[str, np.ndarray]:
+    sigma = ens.std(1, ddof=1)
+    # usc_erl SurrogateController gates on cv = sigma / (sqrt|mu| + 1)
+    cv = sigma / (np.sqrt(np.abs(ens.mean(1))) + 1.0)
+    return {
+        "std": np.argsort(-sigma)[:k],
+        "cv": np.argsort(-cv)[:k],
+        "flip": _flip(est, ens, k, parents),
+    }
+
+
 def _selection(
     true: np.ndarray,
     est: np.ndarray,
-    std: np.ndarray | None,
+    ens: np.ndarray | None,
     ks: list[int],
     rng: np.random.Generator,
 ) -> dict[str, float]:
     pop, parents = len(true), len(true) // 2
     base = _elite_overlap(true, est, parents)
+
+    def score(chosen: np.ndarray) -> float:
+        return _elite_overlap(true, _calibrated_mix(true, est, chosen), parents)
+
     out = {}
     for k in ks:
         out[f"semarl k={k}"] = k / pop + (1 - k / pop) * base
         draws = [rng.choice(pop, k, replace=False) for _ in range(RANDOM_DRAWS)]
-        out[f"random k={k}"] = float(
-            np.mean(
-                [
-                    _elite_overlap(true, _calibrated_mix(true, est, c), parents)
-                    for c in draws
-                ]
-            )
-        )
-        out[f"boundary k={k}"] = _elite_overlap(
-            true,
-            _calibrated_mix(true, est, _boundary(est, k, parents)),
-            parents,
-        )
-        if std is not None:
-            unc = np.argsort(-std)[:k]
-            out[f"unc k={k}"] = _elite_overlap(
-                true, _calibrated_mix(true, est, unc), parents
-            )
+        out[f"random k={k}"] = float(np.mean([score(c) for c in draws]))
+        choices = {"boundary": _boundary(est, k, parents)}
+        if ens is not None:
+            choices |= _uncertainty_choices(est, ens, k, parents)
+        for crit, chosen in choices.items():
+            out[f"{crit} k={k}"] = score(chosen)
         # best subset in hindsight: the ceiling for any selection criterion
         out[f"oracle k={k}"] = max(
-            _elite_overlap(
-                true, _calibrated_mix(true, est, np.array(c)), parents
-            )
-            for c in itertools.combinations(range(pop), k)
+            score(np.array(c)) for c in itertools.combinations(range(pop), k)
         )
     return out
 
@@ -240,6 +261,8 @@ def _test_generation(
         "critic": (d["critic"][t], None),
         "hstep": (d["hstep"][t], None),
     }
+    if "ensemble" in d:
+        preds["ens-mean"] = (d["ensemble"][t].mean(1), None)
     for fname, f in feats.items():
         x = f[lo:t].reshape(-1, f.shape[-1])
         for mname, model in MODELS.items():
@@ -275,8 +298,9 @@ def _benchmark(
                 _elite_overlap(true, est, pop // 2)
             )
             rank_scores[f"{name} rc"].append(_rank_corr(true, est))
-            if name == "critic":
-                for crit, v in _selection(true, est, std, ks, rng).items():
+            if name in SELECTION_SURROGATES:
+                ens = d["ensemble"][t] if "ensemble" in d else None
+                for crit, v in _selection(true, est, ens, ks, rng).items():
                     sel_scores[f"{name} | {crit}"].append(v)
     return rank_scores, sel_scores
 
@@ -299,30 +323,45 @@ def _print_selection(
     per_seed: list[dict[str, list[float]]], ks: list[int]
 ) -> None:
     print("\nPer-individual evaluation, elite_ovl at equal cost (k of pop)")
-    crits = ["semarl", "random", "boundary", "unc", "oracle"]
-    print(
-        f"{'surrogate':<10}{'k':>3}"
-        + "".join(f"{c:>10}" for c in crits)
-        + f"{'unc-bnd':>10}"
-    )
-    for sur in ("critic",):
+    head = f"{'surrogate':<10}{'k':>3}" + "".join(f"{c:>9}" for c in CRITERIA)
+    print(head)
+    for sur in SELECTION_SURROGATES:
         for k in ks:
-            cells, vals = "", {}
-            for c in crits:
-                key = f"{sur} | {c} k={k}"
-                if any(key in s for s in per_seed):
-                    vals[c] = float(
-                        np.mean([np.mean(s[key]) for s in per_seed])
-                    )
-                    cells += f"{vals[c]:>10.3f}"
-                else:
-                    cells += f"{'-':>10}"
-            gain = (
-                f"{vals['unc'] - vals['boundary']:>+10.3f}"
-                if "unc" in vals
-                else f"{'-':>10}"
-            )
-            print(f"{sur:<10}{k:>3}{cells}{gain}")
+            cells = ""
+            for c in CRITERIA:
+                vals = [
+                    np.mean(s[key])
+                    for s in per_seed
+                    if (key := f"{sur} | {c} k={k}") in s
+                ]
+                cells += f"{np.mean(vals):>9.3f}" if vals else f"{'-':>9}"
+            if any(f"{sur} | semarl k={k}" in s for s in per_seed):
+                print(f"{sur:<10}{k:>3}{cells}")
+    _print_verdict(per_seed, ks)
+
+
+def _print_verdict(
+    per_seed: list[dict[str, list[float]]], ks: list[int]
+) -> None:
+    # fixed before the ensemble sweep: an uncertainty criterion counts only if
+    # it beats SEMARL's coin at some k on every seed
+    print("\nUncertainty criterion beats the SEMARL coin on every seed?")
+    for sur in SELECTION_SURROGATES:
+        for crit in UNCERTAINTY:
+            wins = [
+                k
+                for k in ks
+                if all(
+                    f"{sur} | {crit} k={k}" in s
+                    and np.mean(s[f"{sur} | {crit} k={k}"])
+                    > np.mean(s[f"{sur} | semarl k={k}"])
+                    for s in per_seed
+                )
+            ]
+            if any(f"{sur} | {crit} k={ks[0]}" in s for s in per_seed):
+                print(
+                    f"  {sur:<10}{crit:<6} {'yes at k=' + str(wins) if wins else 'no'}"
+                )
 
 
 def main() -> None:

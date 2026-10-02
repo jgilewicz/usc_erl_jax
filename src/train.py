@@ -86,6 +86,7 @@ def _run_semarl(cfg: DictConfig) -> float:
         p_beta=algo_cfg.p_beta,
         td_ema_decay=algo_cfg.td_ema_decay,
         dump_path=_in_run_dir(algo_cfg.dump_path),
+        ensemble_size=int(algo_cfg.ensemble_size),
     )
     td3_state = train_semarl(semarl_cfg, on_generation=wandb.log)
     return evaluate_semarl_actor(

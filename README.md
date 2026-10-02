@@ -150,6 +150,12 @@ assumption baked into the code.
   them on generation `t`'s siblings, and compares per-individual
   evaluation (k real rollouts, surrogate for the rest) against SEMARL's
   per-generation coin at equal cost.
+- **Critic ensemble.** `algorithm.ensemble_size=N` trains N extra critics
+  (`common/critic_ensemble.py`, a port of usc_erl's `EnsembleModule`:
+  independent init, Bernoulli(0.5) bootstrap masks, 2% target noise,
+  smooth-L1 on the shared TD3 target), scores their mean as the `_ens`
+  arm and dumps per-member fitness. It never selects; the benchmark
+  tests whether its disagreement picks better individuals to evaluate.
 - `p_beta` is a dimensionless sensitivity constant on the relative error,
   meant to be shared across envs (unlike a raw-`|TD|` threshold).
 - **Two inherited-but-inert params.** `theta` (`p_surr` replaces it) and

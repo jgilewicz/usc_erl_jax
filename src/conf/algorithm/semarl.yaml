@@ -18,3 +18,9 @@ td_ema_decay: 0.1
 # (weights, true and surrogate fitness, fingerprints) for
 # scripts/surrogate_benchmark.py. Relative paths go to the Hydra run dir.
 dump_path: null
+
+# Critics trained like usc_erl's EnsembleModule (independent init, Bernoulli
+# bootstrap masks, shared TD3 target). Scored as the `_ens` arm and dumped
+# per member; never selects. 0 = off - each member adds about one critic
+# update per env step.
+ensemble_size: 0
