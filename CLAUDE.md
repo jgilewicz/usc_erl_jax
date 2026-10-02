@@ -81,3 +81,10 @@ scripts/               # post-hoc analysis, not shipped in the wheel
 `slurm_run_array.sh` is array-job-per-`(algorithm, seed)` for one
 `TARGET_ENV`. Set `PROJECT_DIR` before submitting (currently a
 placeholder path). See README for the full sbatch sweep loop.
+
+`slurm_semarl_sweep.sh` is array-job-per-`(condition, seed)`: ERL, SEMARL
+at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive SEMARL, TD3 — 8 × 3 =
+24 tasks, tagged `sweep-v2` (first sweep after `num_updates` was fixed to
+scale with `gen_env_steps`; earlier `p_surr` runs are confounded by
+replay ratio). Takes `PROJECT_DIR` from the environment. Read the
+PeVFA go/no-go across seeds with `scripts/pevfa_verdict.py --tag sweep-v2`.

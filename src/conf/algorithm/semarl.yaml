@@ -16,7 +16,8 @@ td_ema_decay: 0.1
 
 # PeVFA Q(s, a, chi(W)): trained by TD alongside, scored as the `_pevfa`
 # arm only - it does not select. pevfa_train_ratio is gradient steps per
-# env step collected; it is the first thing to cut if generations are slow.
+# env step collected; 1.0 matches the critic's train_ratio so a PeVFA miss
+# cannot be blamed on a smaller gradient budget. First thing to cut if slow.
 pevfa_embed_dim: 64
 pevfa_lr: 1e-3
-pevfa_train_ratio: 0.25
+pevfa_train_ratio: 1.0

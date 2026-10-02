@@ -46,10 +46,14 @@ class SEMARLConfig(ERLConfig):
     p_beta: float = 3.0
     td_ema_decay: float = 0.1
 
-    # PeVFA: Q(s, a, chi(W)), measured as `_pevfa` only - promote once it beats `_critic` on elite_overlap
+    # PeVFA: Q(s, a, chi(W)), diagnostic `_pevfa` arm only. Measured at
+    # 0.491 elite_overlap (below chance) even at pevfa_train_ratio=1.0,
+    # which matches the critic's gradient budget - it collapses to
+    # predicting the population mean. Kept as a measured negative result;
+    # see notes.md before reviving it.
     pevfa_embed_dim: int = 64
     pevfa_lr: float = 1e-3
-    pevfa_train_ratio: float = 0.25
+    pevfa_train_ratio: float = 1.0
 
 
 # population and RL actor run in separate vec envs so a surrogate generation can skip the population rollout
