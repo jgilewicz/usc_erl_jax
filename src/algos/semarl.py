@@ -151,6 +151,26 @@ def _reward_only_fitness(
     return discounted * undiscount_scale
 
 
+# Cross-generation probe: `surrogate_*` scores 10 CEM siblings drawn from one
+# Gaussian, the hardest possible discrimination. These score policies sampled
+# across the whole run instead, so an estimator that carries any policy
+# information at all should do well even if it cannot separate siblings.
+# `_critic` is the control: it has no policy input, so whatever it scores here
+# is what the action alone buys, and `_pevfa` minus that is what chi(W) adds.
+_CROSSGEN_CAP = 128
+_CROSSGEN_MIN = 16
+
+
+def _archive_slot(n_filled: int, seen: int, rng: np.random.Generator) -> int:
+    # reservoir sampling: uniform over the whole policy stream, so the archive
+    # stays spread across generations instead of collapsing onto recent ones.
+    # -1 means "this policy is not sampled".
+    if n_filled < _CROSSGEN_CAP:
+        return n_filled
+    slot = int(rng.integers(0, seen + 1))
+    return slot if slot < _CROSSGEN_CAP else -1
+
+
 def _rank_corr(a: jnp.ndarray, b: jnp.ndarray) -> float:
     # Spearman between two population-length fitness vectors.
     x, y = np.asarray(a), np.asarray(b)
@@ -287,6 +307,13 @@ def train(
     max_policies = cfg.buffer_capacity // horizon + 2 * (cfg.pop_size + 1)
     policy_table = np.zeros((max_policies, num_params), np.float32)
     policy_cursor = 0
+
+    # fixed shape so the jitted estimators are not retraced as the archive grows
+    crossgen_w = np.zeros((_CROSSGEN_CAP, num_params), np.float32)
+    crossgen_true = np.zeros(_CROSSGEN_CAP, np.float32)
+    crossgen_n = 0
+    crossgen_seen = 0
+    crossgen_rng = np.random.default_rng(cfg.seed)
 
     pending_injection: int | None = None
     td_rel_ema: float | None = None
@@ -477,6 +504,49 @@ def train(
                     arm_metrics[f"surrogate_elite_overlap{suffix}"] = (
                         _elite_overlap(real_fitness, arm, cem.parents)
                     )
+
+                pick = int(crossgen_rng.integers(0, cfg.pop_size))
+                slot = _archive_slot(crossgen_n, crossgen_seen, crossgen_rng)
+                if slot >= 0:
+                    crossgen_w[slot] = np.asarray(flat_pop[pick])
+                    crossgen_true[slot] = float(real_fitness[pick])
+                    crossgen_n = max(crossgen_n, slot + 1)
+                crossgen_seen += 1
+
+            # unlike the surrogate_* arms this needs no population rollout -
+            # the ground truth is stored - so it is measured every generation
+            if crossgen_n >= _CROSSGEN_MIN:
+                arch_w = jnp.asarray(crossgen_w)
+                arch_heads = jax.vmap(unravel_head)(arch_w)
+                arch_true = jnp.asarray(crossgen_true[:crossgen_n])
+                crossgen = {
+                    "_pevfa": population_fitness(
+                        pevfa_state.online,
+                        td3_state.online.embedding,
+                        arch_heads,
+                        arch_w,
+                        pv_states,
+                        undiscount_scale,
+                    ),
+                    "_critic": _critic_fitness(
+                        td3_state.online.embedding,
+                        td3_state.online.critic1,
+                        td3_state.online.critic2,
+                        arch_heads,
+                        pv_states,
+                        undiscount_scale,
+                    ),
+                }
+                for suffix, est in crossgen.items():
+                    # padded rows carry all-zero weights: score the filled prefix only
+                    valid = est[:crossgen_n]
+                    arm_metrics[f"crossgen_rank_corr{suffix}"] = _rank_corr(
+                        arch_true, valid
+                    )
+                    arm_metrics[f"crossgen_elite_overlap{suffix}"] = (
+                        _elite_overlap(arch_true, valid, crossgen_n // 2)
+                    )
+                arm_metrics["crossgen_archive"] = float(crossgen_n)
 
             cem.tell(fitness, flat_pop)
             pending_injection = None

@@ -52,6 +52,14 @@ scripts/               # post-hoc analysis, not shipped in the wheel
   means adding a suffix to the `arms` dict in
   `semarl.py` and to `ARMS` in `surrogate_diagnostics.py` — the metric
   names and the report table are generated from those.
+- `crossgen_*` is a separate probe, not an arm: it ranks a reservoir
+  archive of `(flat W, true return)` pairs sampled across the whole run
+  instead of the 10 CEM siblings `surrogate_*` scores. It needs no
+  rollout (the ground truth is stored), so it is measured on every
+  generation. `_critic` is its control — no policy input, so
+  `_pevfa` minus `_critic` is what `chi(W)` buys; reading the PeVFA
+  number alone proves nothing, since returns span 5x and anything
+  tracking value scale will rank them.
 - SEMARL runs **two vec envs**: `rl_env` (1 env, always a full `horizon`)
   and `pop_env` (`pop_size`, skipped entirely on surrogate generations).
   That skip is the env-step saving and it is why they cannot share a vec

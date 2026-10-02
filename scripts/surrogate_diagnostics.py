@@ -17,6 +17,14 @@ Arms (metric-name suffix):
 Arms are only scored on real generations: a surrogate generation skips the
 population rollout, so there is no ground truth to score against.
 
+`crossgen_*` is the exception - it scores an archive of (policy, true return)
+pairs collected across the whole run, so it needs no rollout and is measured
+every generation. It answers whether an estimator carries *any* policy
+information: `surrogate_*` asks it to rank 10 CEM siblings drawn from one
+Gaussian, which is the hardest possible discrimination. `_critic` is the
+control there - it has no policy input, so PeVFA minus critic is what chi(W)
+buys.
+
 Settled and no longer reported (see notes.md): |TD|_rel does not predict
 surrogate quality on either arm, |Q1-Q2| does not flag misranked
 individuals, and H/2-vs-H rank stability came back as noise. p_surr is
@@ -42,6 +50,8 @@ ARMS = {
     "_pevfa": "PeVFA Q(s,a,χ(W))",
 }
 
+CROSSGEN_ARMS = {"_pevfa": "PeVFA Q(s,a,χ(W))", "_critic": "critic (control)"}
+
 COLUMNS = [
     "generation",
     "td_error_rel",
@@ -50,10 +60,16 @@ COLUMNS = [
     "fitness_is_real",
     "env_steps",
     "env_steps_gen",
+    "crossgen_archive",
     *(
         f"surrogate_{metric}{suffix}"
         for metric in ("abs_err", "rank_corr", "elite_overlap")
         for suffix in ARMS
+    ),
+    *(
+        f"crossgen_{metric}{suffix}"
+        for metric in ("rank_corr", "elite_overlap")
+        for suffix in CROSSGEN_ARMS
     ),
 ]
 
@@ -167,6 +183,40 @@ def _compare_arms(d: dict[str, np.ndarray]) -> None:
         print(f"\n  bootstrap contribution: {delta:+.3f} elite_ovl ({verdict})")
 
 
+def _report_crossgen(d: dict[str, np.ndarray]) -> None:
+    # `surrogate_*` ranks 10 CEM siblings from one Gaussian; `crossgen_*` ranks
+    # policies sampled across the whole run. If an estimator is at chance on the
+    # siblings but ranks the archive, it carries policy information and only
+    # lacks resolution. If it is at chance on both, it carries none.
+    n = d["crossgen_archive"]
+    if not np.isfinite(n).any():
+        print(
+            "\n(no crossgen_* logged - run predates the cross-generation probe)"
+        )
+        return
+    print(
+        f"\nCross-generation ranking   [archive up to {np.nanmax(n):.0f} policies]"
+    )
+    head = f"  {'arm':<20}{'within-gen':>12}{'cross-gen':>12}{'delta':>9}"
+    print(f"{head}{'rank_corr':>12}")
+    for suffix, label in CROSSGEN_ARMS.items():
+        within = np.nanmean(d[f"surrogate_elite_overlap{suffix}"])
+        across = np.nanmean(d[f"crossgen_elite_overlap{suffix}"])
+        rc = np.nanmean(d[f"crossgen_rank_corr{suffix}"])
+        if not np.isfinite(across):
+            continue
+        print(
+            f"  {label:<20}{within:>+12.3f}{across:>+12.3f}"
+            f"{across - within:>+9.3f}{rc:>+12.3f}"
+        )
+    gap = np.nanmean(d["crossgen_elite_overlap_pevfa"]) - np.nanmean(
+        d["crossgen_elite_overlap_critic"]
+    )
+    # the critic has no policy input, so anything above it is what chi(W) buys
+    verdict = "chi(W) adds nothing" if abs(gap) < 0.02 else "chi(W) contributes"
+    print(f"\n  PeVFA - critic on cross-gen: {gap:+.3f} elite_ovl ({verdict})")
+
+
 def _report_convergence(d: dict[str, np.ndarray]) -> None:
     # arms decay together as CEM narrows; what matters is whether the gap between them narrows too
     g = d["generation"]
@@ -219,6 +269,7 @@ def main() -> None:
         print(f"cumulative env steps: {np.nanmax(steps):,.0f}")
 
     _compare_arms(d)
+    _report_crossgen(d)
     _report_convergence(d)
 
 
