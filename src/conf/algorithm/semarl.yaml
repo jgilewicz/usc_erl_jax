@@ -14,10 +14,7 @@ p_surr_max: 0.9
 p_beta: 3.0
 td_ema_decay: 0.1
 
-# PeVFA Q(s, a, chi(W)): trained by TD alongside, scored as the `_pevfa`
-# arm only - it does not select. pevfa_train_ratio is gradient steps per
-# env step collected; 1.0 matches the critic's train_ratio so a PeVFA miss
-# cannot be blamed on a smaller gradient budget. First thing to cut if slow.
-pevfa_embed_dim: 64
-pevfa_lr: 1e-3
-pevfa_train_ratio: 1.0
+# Path of an .npz holding every post-warmup real generation's population
+# (weights, true and surrogate fitness, fingerprints) for
+# scripts/surrogate_benchmark.py. Relative paths go to the Hydra run dir.
+dump_path: null

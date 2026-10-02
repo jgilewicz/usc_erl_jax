@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 import wandb
 from omegaconf import DictConfig, OmegaConf
 from stable_baselines3.common.callbacks import CallbackList, EvalCallback
@@ -69,6 +70,13 @@ def _run_erl(cfg: DictConfig) -> float:
     )
 
 
+def _in_run_dir(path: str | None) -> str | None:
+    # relative paths land next to the run's Hydra outputs, wherever cwd is
+    if path is None or Path(path).is_absolute():
+        return path
+    return str(Path(HydraConfig.get().runtime.output_dir) / path)
+
+
 def _run_semarl(cfg: DictConfig) -> float:
     algo_cfg = cfg.algorithm
     semarl_cfg = SEMARLConfig(
@@ -77,9 +85,7 @@ def _run_semarl(cfg: DictConfig) -> float:
         p_surr_max=algo_cfg.p_surr_max,
         p_beta=algo_cfg.p_beta,
         td_ema_decay=algo_cfg.td_ema_decay,
-        pevfa_embed_dim=int(algo_cfg.pevfa_embed_dim),
-        pevfa_lr=algo_cfg.pevfa_lr,
-        pevfa_train_ratio=algo_cfg.pevfa_train_ratio,
+        dump_path=_in_run_dir(algo_cfg.dump_path),
     )
     td3_state = train_semarl(semarl_cfg, on_generation=wandb.log)
     return evaluate_semarl_actor(
@@ -134,7 +140,7 @@ def run_training(cfg: DictConfig) -> float:
         runner = dispatch.get(cfg.algorithm.name, _run_sb3)
         eval_reward = runner(cfg)
     except BaseException:
-        # a bare finally: run.finish() logged crashed runs as "finished"
+        # a bare `finally: run.finish()` logged crashes as "finished"
         run.finish(exit_code=1)
         raise
     run.finish()

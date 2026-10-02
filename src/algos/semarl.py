@@ -12,13 +12,9 @@ import optax
 from jax.flatten_util import ravel_pytree
 
 import environments
+from common.population_dump import PopulationDump
 from common.replay_buffer import Buffer
 from common.rollout import collect_parallel_episode
-from common.pevfa import (
-    init_pevfa,
-    make_pevfa_step,
-    population_fitness,
-)
 from common.td3 import (
     TD3Config,
     TD3State,
@@ -46,14 +42,9 @@ class SEMARLConfig(ERLConfig):
     p_beta: float = 3.0
     td_ema_decay: float = 0.1
 
-    # PeVFA: Q(s, a, chi(W)), diagnostic `_pevfa` arm only. Measured at
-    # 0.491 elite_overlap (below chance) even at pevfa_train_ratio=1.0,
-    # which matches the critic's gradient budget - it collapses to
-    # predicting the population mean. Kept as a measured negative result;
-    # see notes.md before reviving it.
-    pevfa_embed_dim: int = 64
-    pevfa_lr: float = 1e-3
-    pevfa_train_ratio: float = 1.0
+    # .npz of every real generation's population, for offline surrogate benchmarks
+    # (scripts/surrogate_benchmark.py); None = off
+    dump_path: str | None = None
 
 
 # population and RL actor run in separate vec envs so a surrogate generation can skip the population rollout
@@ -153,26 +144,6 @@ def _reward_only_fitness(
         h_steps, gamma, h_reward, h_done, no_bootstrap
     )
     return discounted * undiscount_scale
-
-
-# Cross-generation probe: `surrogate_*` scores 10 CEM siblings drawn from one
-# Gaussian, the hardest possible discrimination. These score policies sampled
-# across the whole run instead, so an estimator that carries any policy
-# information at all should do well even if it cannot separate siblings.
-# `_critic` is the control: it has no policy input, so whatever it scores here
-# is what the action alone buys, and `_pevfa` minus that is what chi(W) adds.
-_CROSSGEN_CAP = 128
-_CROSSGEN_MIN = 16
-
-
-def _archive_slot(n_filled: int, seen: int, rng: np.random.Generator) -> int:
-    # reservoir sampling: uniform over the whole policy stream, so the archive
-    # stays spread across generations instead of collapsing onto recent ones.
-    # -1 means "this policy is not sampled".
-    if n_filled < _CROSSGEN_CAP:
-        return n_filled
-    slot = int(rng.integers(0, seen + 1))
-    return slot if slot < _CROSSGEN_CAP else -1
 
 
 def _rank_corr(a: jnp.ndarray, b: jnp.ndarray) -> float:
@@ -293,31 +264,7 @@ def train(
     # projects the discounted bootstrap onto real_fitness's undiscounted scale (see _bootstrap_fitness).
     undiscount_scale = horizon * (1.0 - cfg.gamma) / (1.0 - cfg.gamma**horizon)
 
-    pevfa_optimizer = optax.adam(cfg.pevfa_lr)
-    key, pevfa_key = jax.random.split(key)
-    pevfa_state = init_pevfa(
-        obs_dim,
-        action_dim,
-        num_params,
-        key=pevfa_key,
-        embed_dim=cfg.pevfa_embed_dim,
-        hidden_dims=cfg.critic_hidden_dims,
-        optimizer=pevfa_optimizer,
-    )
-    pevfa_step = make_pevfa_step(
-        cfg.gamma, cfg.tau, pevfa_optimizer, unravel_head
-    )
-    # ring of raw policy params by policy_id; sized so it can't wrap onto a still-live policy
-    max_policies = cfg.buffer_capacity // horizon + 2 * (cfg.pop_size + 1)
-    policy_table = np.zeros((max_policies, num_params), np.float32)
-    policy_cursor = 0
-
-    # fixed shape so the jitted estimators are not retraced as the archive grows
-    crossgen_w = np.zeros((_CROSSGEN_CAP, num_params), np.float32)
-    crossgen_true = np.zeros(_CROSSGEN_CAP, np.float32)
-    crossgen_n = 0
-    crossgen_seen = 0
-    crossgen_rng = np.random.default_rng(cfg.seed)
+    dump = PopulationDump(cfg.dump_path) if cfg.dump_path else None
 
     pending_injection: int | None = None
     td_rel_ema: float | None = None
@@ -342,17 +289,6 @@ def train(
             )
             key, coin_key = jax.random.split(key)
             use_real_fitness = not bool(jax.random.bernoulli(coin_key, p_surr))
-
-            # Register only the policies that will actually collect.
-            rl_flat_now, _ = ravel_pytree(td3_state.online.actor)
-            n_new = cfg.pop_size + 1 if use_real_fitness else 1
-            slots = (policy_cursor + np.arange(n_new)) % max_policies
-            policy_table[slots[-1]] = np.asarray(rl_flat_now)
-            rl_ids = jnp.asarray(slots[-1:], dtype=jnp.int32)
-            if use_real_fitness:
-                policy_table[slots[:-1]] = np.asarray(flat_pop)
-                pop_ids = jnp.asarray(slots[:-1], dtype=jnp.int32)
-            policy_cursor = (policy_cursor + n_new) % max_policies
 
             def rl_policy(
                 act_key: jax.Array,
@@ -401,7 +337,7 @@ def train(
 
             # RL actor always runs a full episode: only guaranteed source of fresh buffer data
             rl_returns, key = collect_parallel_episode(
-                rl_env, key, rl_policy, buffer, horizon, policy_ids=rl_ids
+                rl_env, key, rl_policy, buffer, horizon
             )
             rl_return = float(rl_returns[0])
             gen_env_steps = horizon
@@ -415,7 +351,6 @@ def train(
                     buffer,
                     horizon,
                     on_step=capture_h_step,
-                    policy_ids=pop_ids,
                 )
                 real_fitness: jnp.ndarray | None = pop_returns
                 gen_env_steps += horizon * cfg.pop_size
@@ -489,14 +424,6 @@ def train(
                         undiscount_scale,
                     ),
                     "_critic": critic_fitness,
-                    "_pevfa": population_fitness(
-                        pevfa_state.online,
-                        td3_state.online.embedding,
-                        pop_heads,
-                        flat_pop,
-                        pv_states,
-                        undiscount_scale,
-                    ),
                 }
                 for suffix, arm in arms.items():
                     arm_metrics[f"surrogate_abs_err{suffix}"] = float(
@@ -508,56 +435,30 @@ def train(
                     arm_metrics[f"surrogate_elite_overlap{suffix}"] = (
                         _elite_overlap(real_fitness, arm, cem.parents)
                     )
-
-                pick = int(crossgen_rng.integers(0, cfg.pop_size))
-                slot = _archive_slot(crossgen_n, crossgen_seen, crossgen_rng)
-                if slot >= 0:
-                    crossgen_w[slot] = np.asarray(flat_pop[pick])
-                    crossgen_true[slot] = float(real_fitness[pick])
-                    crossgen_n = max(crossgen_n, slot + 1)
-                crossgen_seen += 1
-
-            # unlike the surrogate_* arms this needs no population rollout -
-            # the ground truth is stored - so it is measured every generation
-            if crossgen_n >= _CROSSGEN_MIN:
-                arch_w = jnp.asarray(crossgen_w)
-                arch_heads = jax.vmap(unravel_head)(arch_w)
-                arch_true = jnp.asarray(crossgen_true[:crossgen_n])
-                crossgen = {
-                    "_pevfa": population_fitness(
-                        pevfa_state.online,
-                        td3_state.online.embedding,
-                        arch_heads,
-                        arch_w,
-                        pv_states,
-                        undiscount_scale,
-                    ),
-                    "_critic": _critic_fitness(
-                        td3_state.online.embedding,
-                        td3_state.online.critic1,
-                        td3_state.online.critic2,
-                        arch_heads,
-                        pv_states,
-                        undiscount_scale,
-                    ),
-                }
-                for suffix, est in crossgen.items():
-                    # padded rows carry all-zero weights: score the filled prefix only
-                    valid = est[:crossgen_n]
-                    arm_metrics[f"crossgen_rank_corr{suffix}"] = _rank_corr(
-                        arch_true, valid
+                # warmup generations are skipped: the critic has not trained yet
+                if dump is not None and not warmup:
+                    dump.record(
+                        generation=generation,
+                        env_steps=env_steps,
+                        injected=-1
+                        if pending_injection is None
+                        else pending_injection,
+                        flat_pop=flat_pop,
+                        real=real_fitness,
+                        critic=critic_fitness,
+                        hstep=arms[""],
+                        fingerprint=dump.fingerprint(
+                            buffer, td3_state.online.embedding, pop_heads
+                        ),
+                        cem_mu=cem.mu,
+                        cem_cov=cem.cov,
                     )
-                    arm_metrics[f"crossgen_elite_overlap{suffix}"] = (
-                        _elite_overlap(arch_true, valid, crossgen_n // 2)
-                    )
-                arm_metrics["crossgen_archive"] = float(crossgen_n)
 
             cem.tell(fitness, flat_pop)
             pending_injection = None
 
             critic_losses = []
             actor_losses = []
-            pevfa_losses = []
             if not warmup:
                 # scales with steps actually collected: a fixed count gave p_surr=0.9 a 6x replay ratio
                 num_updates = int(cfg.train_ratio * gen_env_steps)
@@ -571,29 +472,6 @@ def train(
                     if step % cfg.policy_freq == 0:
                         td3_state, actor_loss = actor_step(td3_state, batch)
                         actor_losses.append(actor_loss)
-
-                # PeVFA only trains on transitions whose generating policy is still in the ring
-                for _ in range(int(cfg.pevfa_train_ratio * gen_env_steps)):
-                    key, pv_key = jax.random.split(key)
-                    pv_batch = buffer.sample(pv_key, cfg.batch_size)
-                    ids = np.asarray(pv_batch["policy_id"][..., 0])
-                    if (ids < 0).any():
-                        raise RuntimeError(
-                            "PeVFA sampled an untagged transition "
-                            f"(policy_id={ids.min()}). Every SEMARL rollout "
-                            "passes policy_ids, so this means the buffer was "
-                            "filled by something that does not - PeVFA would "
-                            "otherwise train on a state paired with the wrong "
-                            "policy, silently."
-                        )
-                    weights = jnp.asarray(policy_table[ids])
-                    pevfa_state, pv_loss = pevfa_step(
-                        pevfa_state,
-                        td3_state.online.embedding,
-                        pv_batch,
-                        weights,
-                    )
-                    pevfa_losses.append(pv_loss)
 
                 champion_idx = int(jnp.argmax(fitness))
                 champion_head = unravel_head(flat_pop[champion_idx])
@@ -630,9 +508,6 @@ def train(
                 else float("nan"),
                 "fitness_critic_mean": float(jnp.mean(critic_fitness)),
                 "rl_return": rl_return,
-                "pevfa_loss": float(np.mean(pevfa_losses))
-                if pevfa_losses
-                else 0.0,
                 "critic_loss": float(np.mean(critic_losses))
                 if critic_losses
                 else 0.0,
@@ -640,7 +515,6 @@ def train(
                 if actor_losses
                 else 0.0,
             }
-            # not `if arm_metrics`: crossgen_* fills it on surrogate generations too
             if real_fitness is not None:
                 arms_str = "elite(H/nobo/crit)=" + "/".join(
                     f"{arm_metrics[f'surrogate_elite_overlap{s}']:.2f}"
@@ -665,6 +539,9 @@ def train(
     finally:
         rl_env.close()
         pop_env.close()
+        # saved even on a crash: a truncated run is still a usable dataset
+        if dump is not None:
+            dump.save()
 
     return td3_state
 

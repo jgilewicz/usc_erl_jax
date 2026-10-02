@@ -12,7 +12,6 @@ class Transition(NamedTuple):
     reward: jnp.ndarray
     next_state: jnp.ndarray
     done: jnp.ndarray
-    policy_id: jnp.ndarray
 
 
 @jax.jit
@@ -22,11 +21,9 @@ def _scatter(
     reward: jnp.ndarray,
     next_state: jnp.ndarray,
     done: jnp.ndarray,
-    policy_id: jnp.ndarray,
     indices: jnp.ndarray,
     transition: Transition,
 ) -> tuple[
-    jnp.ndarray,
     jnp.ndarray,
     jnp.ndarray,
     jnp.ndarray,
@@ -39,7 +36,6 @@ def _scatter(
         reward.at[indices].set(transition.reward),
         next_state.at[indices].set(transition.next_state),
         done.at[indices].set(transition.done),
-        policy_id.at[indices].set(transition.policy_id),
     )
 
 
@@ -50,7 +46,6 @@ def _gather(
     reward: jnp.ndarray,
     next_state: jnp.ndarray,
     done: jnp.ndarray,
-    policy_id: jnp.ndarray,
     indices: jnp.ndarray,
 ) -> dict[str, jnp.ndarray]:
     return {
@@ -59,7 +54,6 @@ def _gather(
         "reward": reward[indices],
         "next_state": next_state[indices],
         "done": done[indices],
-        "policy_id": policy_id[indices],
     }
 
 
@@ -71,7 +65,6 @@ class Buffer:
         self.reward = jnp.zeros((capacity, 1), dtype=jnp.float32)
         self.next_state = jnp.zeros((capacity, state_dim), dtype=jnp.float32)
         self.done = jnp.zeros((capacity, 1), dtype=jnp.float32)
-        self.policy_id = jnp.full((capacity, 1), -1, dtype=jnp.int32)
         self.ptr = 0
         self.size = 0
 
@@ -84,9 +77,6 @@ class Buffer:
             reward=transition.reward.reshape(num_envs, 1).astype(jnp.float32),
             next_state=transition.next_state.astype(jnp.float32),
             done=transition.done.reshape(num_envs, 1).astype(jnp.float32),
-            policy_id=transition.policy_id.reshape(num_envs, 1).astype(
-                jnp.int32
-            ),
         )
         (
             self.state,
@@ -94,14 +84,12 @@ class Buffer:
             self.reward,
             self.next_state,
             self.done,
-            self.policy_id,
         ) = _scatter(
             self.state,
             self.action,
             self.reward,
             self.next_state,
             self.done,
-            self.policy_id,
             indices,
             transition,
         )
@@ -121,7 +109,6 @@ class Buffer:
             self.reward,
             self.next_state,
             self.done,
-            self.policy_id,
             indices,
         )
 

@@ -46,20 +46,11 @@ scripts/               # post-hoc analysis, not shipped in the wheel
   drift.
 - Fitness estimators are scored against the true return, by metric-name
   suffix: `` = the `h_steps` bootstrap, `_noboot` = same with `γ^H·Q`
-  dropped, `_critic` = `E_{s~D}[Q(s, π_i(s))]` over a replay batch,
-  `_pevfa` = the same but policy-conditioned. **Arms are measured, not
-  used to select** — adding one cannot change a baseline. Adding an arm
-  means adding a suffix to the `arms` dict in
+  dropped, `_critic` = `E_{s~D}[Q(s, π_i(s))]` over a replay batch.
+  **Arms are measured, not used to select** — adding one cannot change a
+  baseline. Adding an arm means adding a suffix to the `arms` dict in
   `semarl.py` and to `ARMS` in `surrogate_diagnostics.py` — the metric
   names and the report table are generated from those.
-- `crossgen_*` is a separate probe, not an arm: it ranks a reservoir
-  archive of `(flat W, true return)` pairs sampled across the whole run
-  instead of the 10 CEM siblings `surrogate_*` scores. It needs no
-  rollout (the ground truth is stored), so it is measured on every
-  generation. `_critic` is its control — no policy input, so
-  `_pevfa` minus `_critic` is what `chi(W)` buys; reading the PeVFA
-  number alone proves nothing, since returns span 5x and anything
-  tracking value scale will rank them.
 - SEMARL runs **two vec envs**: `rl_env` (1 env, always a full `horizon`)
   and `pop_env` (`pop_size`, skipped entirely on surrogate generations).
   That skip is the env-step saving and it is why they cannot share a vec
@@ -68,11 +59,12 @@ scripts/               # post-hoc analysis, not shipped in the wheel
   `gen_env_steps`, never a fixed count.
 - `env_steps` is the x-axis for every performance claim — generations are
   not comparable across `p_surr` once the rollout is split.
-- The buffer's `policy_id` column tags each transition with the policy
-  that generated it (PeVFA's TD target needs that policy's action at
-  `s'`). `collect_parallel_episode(..., policy_ids=...)`; callers that do
-  not track policies store `-1` and PeVFA skips those rows. Raw `W` lives
-  in a ring in `semarl.train`, sized `buffer_capacity // horizon`.
+- PeVFA (policy-conditioned `Q(s, a, chi(W))`) was implemented and
+  removed: it ranked CEM siblings worse than the plain critic in every
+  run (`notes.md`). Candidate replacements are benchmarked offline, not
+  wired into the loop: `algorithm.dump_path` writes the population of
+  every real generation to an `.npz` (`common/population_dump.py`), and
+  `scripts/surrogate_benchmark.py` trains and scores surrogates on it.
 - `notes.md` holds the measured results and the list of refuted
   hypotheses. Check it before re-proposing a gating signal.
 
@@ -83,8 +75,10 @@ scripts/               # post-hoc analysis, not shipped in the wheel
 placeholder path). See README for the full sbatch sweep loop.
 
 `slurm_semarl_sweep.sh` is array-job-per-`(condition, seed)`: ERL, SEMARL
-at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive SEMARL, TD3 — 8 × 3 =
-24 tasks, tagged `sweep-v2` (first sweep after `num_updates` was fixed to
-scale with `gen_env_steps`; earlier `p_surr` runs are confounded by
-replay ratio). Takes `PROJECT_DIR` from the environment. Read the
-PeVFA go/no-go across seeds with `scripts/pevfa_verdict.py --tag sweep-v2`.
+at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive SEMARL, TD3, and a
+`p_surr=0` run with `dump_path` set (condition 8, tasks 24–26) — 9 × 3 =
+27 tasks, tagged `sweep-v2`. Earlier `p_surr` runs are confounded by
+replay ratio (`num_updates` did not scale with `gen_env_steps`). Jobs run
+`.venv/bin/python` directly — `uv sync` on the login node first; parallel
+`uv run` calls race on the shared uv cache. Takes `PROJECT_DIR` from the
+environment.

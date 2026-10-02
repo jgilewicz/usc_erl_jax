@@ -135,13 +135,6 @@ assumption baked into the code.
     What selects when the population rollout is skipped, at zero env
     steps. Averaging over the batch is what makes it work: scored at a
     single state it sits at chance.
-  - `_pevfa` — `E_{s~D}[Q(s, π_i(s), χ(W_i))]`, a policy-extended value
-    function (`src/common/pevfa.py`, `modules.PeVFA`) trained by TD
-    alongside TD3. The policy is an *input*, so it can value a population
-    member it never collected from; a plain `Q(s,a)` only sees a policy
-    through its action at `s`. **Measured only — it does not select**, so
-    it cannot change a baseline. Promote it past `_critic` only if it wins
-    on `elite_overlap`.
   - metrics per arm: `surrogate_elite_overlap*` (headline — `_cem_tell`
     keeps `argsort(-scores)[:parents]` and discards the rest, so elite
     membership is all selection consumes; **chance is 0.5**),
@@ -149,13 +142,14 @@ assumption baked into the code.
     `surrogate_abs_err*` (scale drift only).
 - `env_steps` / `env_steps_gen` — cumulative and per-generation
   interaction cost. The x-axis for every performance claim.
-- **Policy tagging.** PeVFA's TD target uses the action of the policy that
-  *generated* the transition, so the buffer carries a `policy_id` column
-  and `collect_parallel_episode` takes `policy_ids`. Raw `W` lives in a
-  ring sized `buffer_capacity // horizon`: slots are consumed at exactly
-  `1/horizon` per env step whichever generation type runs, so the ring
-  cannot wrap onto a policy whose transitions are still live. Callers that
-  do not track policies (ERL) store `-1` and those rows are skipped.
+- **Population dump.** `algorithm.dump_path=population.npz` writes every
+  post-warmup real generation (head weights, true return, critic and
+  h-step fitness, actions on 64 fixed probe states, CEM mean/cov) to the
+  Hydra run dir. `scripts/surrogate_benchmark.py` replays selection on it
+  offline: it trains candidate surrogates on generations `< t`, scores
+  them on generation `t`'s siblings, and compares per-individual
+  evaluation (k real rollouts, surrogate for the rest) against SEMARL's
+  per-generation coin at equal cost.
 - `p_beta` is a dimensionless sensitivity constant on the relative error,
   meant to be shared across envs (unlike a raw-`|TD|` threshold).
 - **Two inherited-but-inert params.** `theta` (`p_surr` replaces it) and
