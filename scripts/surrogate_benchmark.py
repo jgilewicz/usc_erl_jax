@@ -20,9 +20,11 @@ bootstrap that costs H env steps per individual. The learned models use the
                  one with a predictive std (cf. DTS-CMA-ES)
 each on `w` (raw head weights) and `fp` (actions on fixed probe states).
 
-Part 2 - per-individual evaluation. Spend k real rollouts on chosen
-individuals, keep the surrogate for the rest (affine-calibrated on the k
-true values), select top-`parents`. Compared at equal cost against SEMARL's
+Part 2 - per-individual evaluation, on the critic (the learned models sit
+at chance, so their selection numbers say nothing). Spend k real rollouts
+on chosen individuals, keep the critic for the rest (offset-calibrated on
+the k true values), select top-`parents`. `oracle` is the best k-subset in
+hindsight - the ceiling any selection criterion can reach. Compared at equal cost against SEMARL's
 per-generation coin: k/pop * 1.0 + (1 - k/pop) * elite_overlap(surrogate).
 `unc - boundary` is what uncertainty adds over picking the individuals the
 surrogate ranks closest to the elite cut - the number a paper about
@@ -34,6 +36,7 @@ uncertainty has to show is positive.
 from __future__ import annotations
 
 import argparse
+import itertools
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
@@ -49,6 +52,7 @@ RANK_STEPS = 300
 RANK_LR = 0.1
 RANK_L2 = 1e-3
 RANDOM_DRAWS = 20
+MIN_REL_SD = 1e-3
 
 
 def _elite(scores: np.ndarray, parents: int) -> set[int]:
@@ -78,8 +82,15 @@ def _center_groups(
 def _standardize(
     train: np.ndarray, test: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    mu, sd = train.mean(0), train.std(0) + 1e-8
-    return (train - mu) / sd, (test - mu) / sd
+    mu, sd = train.mean(0), train.std(0)
+    # a feature (near-)constant over the window cannot be learned, and a
+    # tiny sd turns any test deviation into a z-score of ~1e3, which zeroes
+    # the GP kernel and dominates ridge (seen on saturated tanh actions)
+    keep = sd > MIN_REL_SD * np.median(sd)
+    return (
+        (train[:, keep] - mu[keep]) / sd[keep],
+        (test[:, keep] - mu[keep]) / sd[keep],
+    )
 
 
 def _ridge_dual(x: np.ndarray, y: np.ndarray, x_test: np.ndarray) -> np.ndarray:
@@ -160,15 +171,12 @@ def _features(d: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
 def _calibrated_mix(
     true: np.ndarray, est: np.ndarray, chosen: np.ndarray
 ) -> np.ndarray:
-    # surrogate and true returns differ in scale: fit y = a*s + b on the
-    # k pairs that were paid for
-    mixed = est.astype(np.float64).copy()
-    if len(chosen) >= 2 and np.ptp(est[chosen]) > 0:
-        a, b = np.polyfit(est[chosen], true[chosen], 1)
-        if a > 0:
-            mixed = a * mixed + b
-    else:
-        mixed += (true[chosen] - est[chosen]).mean()
+    # shift the surrogate onto the true scale by its mean error on the k
+    # paid-for pairs. Measured on 3 seeds x 80 generations: an affine fit on
+    # those k pairs (0.782 at k=5, boundary) and one on the previous 5
+    # generations' pairs (0.752) both lose to this (0.818) - k points give a
+    # wild slope, and the critic's scale drifts between generations.
+    mixed = est.astype(np.float64) + (true[chosen] - est[chosen]).mean()
     mixed[chosen] = true[chosen]
     return mixed
 
@@ -209,6 +217,13 @@ def _selection(
             out[f"unc k={k}"] = _elite_overlap(
                 true, _calibrated_mix(true, est, unc), parents
             )
+        # best subset in hindsight: the ceiling for any selection criterion
+        out[f"oracle k={k}"] = max(
+            _elite_overlap(
+                true, _calibrated_mix(true, est, np.array(c)), parents
+            )
+            for c in itertools.combinations(range(pop), k)
+        )
     return out
 
 
@@ -260,7 +275,7 @@ def _benchmark(
                 _elite_overlap(true, est, pop // 2)
             )
             rank_scores[f"{name} rc"].append(_rank_corr(true, est))
-            if name in ("critic", "gp/fp", "gp/w"):
+            if name == "critic":
                 for crit, v in _selection(true, est, std, ks, rng).items():
                     sel_scores[f"{name} | {crit}"].append(v)
     return rank_scores, sel_scores
@@ -284,13 +299,13 @@ def _print_selection(
     per_seed: list[dict[str, list[float]]], ks: list[int]
 ) -> None:
     print("\nPer-individual evaluation, elite_ovl at equal cost (k of pop)")
-    crits = ["semarl", "random", "boundary", "unc"]
+    crits = ["semarl", "random", "boundary", "unc", "oracle"]
     print(
         f"{'surrogate':<10}{'k':>3}"
         + "".join(f"{c:>10}" for c in crits)
         + f"{'unc-bnd':>10}"
     )
-    for sur in ("critic", "gp/fp", "gp/w"):
+    for sur in ("critic",):
         for k in ks:
             cells, vals = "", {}
             for c in crits:
