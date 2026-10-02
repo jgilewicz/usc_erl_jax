@@ -485,9 +485,8 @@ def train(
             actor_losses = []
             pevfa_losses = []
             if not warmup:
-                num_updates = int(
-                    cfg.train_ratio * horizon * (cfg.pop_size + 1)
-                )
+                # scales with steps actually collected: a fixed count gave p_surr=0.9 a 6x replay ratio
+                num_updates = int(cfg.train_ratio * gen_env_steps)
                 for step in range(num_updates):
                     key, sample_key, noise_key = jax.random.split(key, 3)
                     batch = buffer.sample(sample_key, cfg.batch_size)
@@ -550,6 +549,8 @@ def train(
                 **arm_metrics,
                 "env_steps": float(env_steps),
                 "env_steps_gen": float(gen_env_steps),
+                # critic_updates / env_steps_gen must equal train_ratio on every generation
+                "critic_updates": float(len(critic_losses)),
                 "fitness_real_mean": float(jnp.mean(real_fitness))
                 if real_fitness is not None
                 else float("nan"),
