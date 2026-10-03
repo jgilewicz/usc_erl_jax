@@ -18,6 +18,9 @@ bootstrap that costs H env steps per individual. The learned models use the
                  (Ranking-SVM style, cf. s*ACM-ES)
   gp             GP regression on within-generation-centred data; the only
                  one with a predictive std (cf. DTS-CMA-ES)
+  gp-pca         the same on the top 16 principal components of the
+                 within-generation deviations - a linear behavioural latent
+                 space (cf. Tenedini et al., ICLR 2026)
 each on `w` (raw head weights) and `fp` (actions on fixed probe states).
 
 Part 2 - per-individual evaluation, on the critic and the ensemble mean
@@ -55,6 +58,7 @@ RANK_LR = 0.1
 RANK_L2 = 1e-3
 RANDOM_DRAWS = 20
 MIN_REL_SD = 1e-3
+PCA_DIMS = 16
 SELECTION_SURROGATES = ("critic", "ens-mean")
 UNCERTAINTY = ("std", "cv", "flip")
 CRITERIA = ("semarl", "random", "boundary", *UNCERTAINTY, "oracle")
@@ -157,11 +161,31 @@ def gp(
     return k_star @ alpha * scale, np.sqrt(var) * scale
 
 
+def gp_pca(
+    x: np.ndarray, y: np.ndarray, groups: np.ndarray, x_test: np.ndarray
+) -> Prediction:
+    # linear stand-in for a behavioural latent space (Tenedini et al., ICLR
+    # 2026): siblings' fingerprints vary in ~11 effective dimensions, so
+    # project the within-generation deviations onto their top PCs instead of
+    # standardising all of them - which lifts noise dims to unit variance
+    xc, yc = _center_groups(x, y, groups)
+    _, _, vt = np.linalg.svd(xc, full_matrices=False)
+    basis = vt[:PCA_DIMS].T
+    xt = (x_test - x_test.mean(0)) @ basis
+    xs = xc @ basis
+    sq = ((xs[:, None] - xs[None]) ** 2).sum(-1)
+    length2 = np.median(sq[sq > 0]) if (sq > 0).any() else 1.0
+    k = np.exp(-sq / length2) + GP_NOISE * np.eye(len(xs))
+    k_star = np.exp(-((xt[:, None] - xs[None]) ** 2).sum(-1) / length2)
+    return k_star @ np.linalg.solve(k, yc), None
+
+
 MODELS: dict[str, Model] = {
     "ridge": ridge,
     "ridge-within": ridge_within,
     "rank": rank,
     "gp": gp,
+    "gp-pca": gp_pca,
 }
 
 
@@ -311,11 +335,13 @@ def _print_ranking(per_seed: list[dict[str, list[float]]]) -> None:
         f"\n{'surrogate':<20}{'elite_ovl':>11}{'± seeds':>9}{'rank_corr':>11}"
     )
     for name in names:
-        ovl = [np.mean(s[f"{name} ovl"]) for s in per_seed]
-        rc = [np.mean(s[f"{name} rc"]) for s in per_seed]
+        # dumps without an ensemble have no ens-mean: average the seeds that do
+        have = [s for s in per_seed if f"{name} ovl" in s]
+        ovl = [np.mean(s[f"{name} ovl"]) for s in have]
+        rc = [np.mean(s[f"{name} rc"]) for s in have]
         print(
             f"{name:<20}{np.mean(ovl):>11.3f}{np.std(ovl):>9.3f}"
-            f"{np.mean(rc):>+11.3f}"
+            f"{np.mean(rc):>+11.3f}   n={len(have)}"
         )
 
 
