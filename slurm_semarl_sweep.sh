@@ -1,13 +1,9 @@
 #!/bin/bash -l
 # SEMARL p_surr sweep: one (condition, seed) pair per array task, one TARGET_ENV.
-# 9 conditions x 3 seeds = 27 tasks.
-#
-# Population dump for scripts/surrogate_benchmark.py (condition 8) lands in
-# outputs/semarl-dump_<env>_s<seed>/population.npz:
-#   sbatch --array=24-26 slurm_semarl_sweep.sh
+# 8 conditions x 3 seeds = 24 tasks.
 #
 #   PROJECT_DIR=/path/to/usc_erl_jax TARGET_ENV=HalfCheetah-v5 \
-#     sbatch --array=0-26 slurm_semarl_sweep.sh
+#     sbatch --array=0-23 slurm_semarl_sweep.sh
 #
 # Rerun a single condition (e.g. adaptive = condition 6, seeds 0-2):
 #   sbatch --array=18-20 slurm_semarl_sweep.sh
@@ -40,8 +36,6 @@ CONDITIONS=(
   "semarl-p090|algorithm=semarl algorithm.p_surr_min=0.9 algorithm.p_surr_max=0.9"
   "semarl-adapt|algorithm=semarl"
   "td3|algorithm=td3"
-  # p=0: every generation real, so every one is a benchmark sample
-  "semarl-dump|algorithm=semarl algorithm.p_surr_min=0.0 algorithm.p_surr_max=0.0 algorithm.dump_path=population.npz algorithm.ensemble_size=5"
 )
 SEEDS=(0 1 2)
 N_SEEDS=${#SEEDS[@]}

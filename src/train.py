@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import hydra
-from hydra.core.hydra_config import HydraConfig
 import wandb
 from omegaconf import DictConfig, OmegaConf
 from stable_baselines3.common.callbacks import CallbackList, EvalCallback
@@ -70,13 +69,6 @@ def _run_erl(cfg: DictConfig) -> float:
     )
 
 
-def _in_run_dir(path: str | None) -> str | None:
-    # relative paths land next to the run's Hydra outputs, wherever cwd is
-    if path is None or Path(path).is_absolute():
-        return path
-    return str(Path(HydraConfig.get().runtime.output_dir) / path)
-
-
 def _run_semarl(cfg: DictConfig) -> float:
     algo_cfg = cfg.algorithm
     semarl_cfg = SEMARLConfig(
@@ -85,8 +77,6 @@ def _run_semarl(cfg: DictConfig) -> float:
         p_surr_max=algo_cfg.p_surr_max,
         p_beta=algo_cfg.p_beta,
         td_ema_decay=algo_cfg.td_ema_decay,
-        dump_path=_in_run_dir(algo_cfg.dump_path),
-        ensemble_size=int(algo_cfg.ensemble_size),
     )
     td3_state = train_semarl(semarl_cfg, on_generation=wandb.log)
     return evaluate_semarl_actor(

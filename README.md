@@ -142,20 +142,6 @@ assumption baked into the code.
     `surrogate_abs_err*` (scale drift only).
 - `env_steps` / `env_steps_gen` — cumulative and per-generation
   interaction cost. The x-axis for every performance claim.
-- **Population dump.** `algorithm.dump_path=population.npz` writes every
-  post-warmup real generation (head weights, true return, critic and
-  h-step fitness, actions on 64 fixed probe states, CEM mean/cov) to the
-  Hydra run dir. `scripts/surrogate_benchmark.py` replays selection on it
-  offline: it trains candidate surrogates on generations `< t`, scores
-  them on generation `t`'s siblings, and compares per-individual
-  evaluation (k real rollouts, surrogate for the rest) against SEMARL's
-  per-generation coin at equal cost.
-- **Critic ensemble.** `algorithm.ensemble_size=N` trains N extra critics
-  (`common/critic_ensemble.py`, a port of usc_erl's `EnsembleModule`:
-  independent init, Bernoulli(0.5) bootstrap masks, 2% target noise,
-  smooth-L1 on the shared TD3 target), scores their mean as the `_ens`
-  arm and dumps per-member fitness. It never selects; the benchmark
-  tests whether its disagreement picks better individuals to evaluate.
 - `p_beta` is a dimensionless sensitivity constant on the relative error,
   meant to be shared across envs (unlike a raw-`|TD|` threshold).
 - **Two inherited-but-inert params.** `theta` (`p_surr` replaces it) and
@@ -168,30 +154,31 @@ assumption baked into the code.
 **Measured on HalfCheetah, see `notes.md` for the numbers.** Adapting `H`
 was dropped (`rank_corr` rises monotonically with `H`). The adaptive gate
 itself is so far indistinguishable from a fixed `p_surr`: no critic-derived
-signal (`|TD|_rel`, `|Q1−Q2|`, H/2-vs-H rank stability) predicts surrogate
-quality on either arm. All tuning is HalfCheetah-only — `p_beta = 3.0` is
-set against its `|TD|_rel ≈ 0.21`, and the cross-env portability the
-`mean|r|` normalization is *for* is still untested.
+signal (`|TD|_rel`, `|Q1−Q2|`, H/2-vs-H rank stability, critic-ensemble
+disagreement) predicts surrogate quality, and policy-conditioned surrogates
+(PeVFA and offline alternatives) rank siblings at chance. All tuning is
+HalfCheetah-only — `p_beta = 3.0` is set against its `|TD|_rel ≈ 0.21`,
+and the cross-env portability the `mean|r|` normalization is *for* is
+still untested.
 
 
 ```bash
 just train semarl HalfCheetah-v5
-# cost/accuracy frontier from a finished run's metrics:
-uv run python scripts/surrogate_diagnostics.py --wandb evo_rl/triage_erl/<run_id>
 ```
 
 ## Tooling
 
 - `justfile`: `install`, `test`, `lint`/`lint-check`, `types`, `check`,
   `train`, `train-all`.
-- `scripts/surrogate_diagnostics.py`: post-hoc cost/accuracy frontier —
-  each estimator's elite overlap against its measured cost per generation
-  (taken from `env_steps_gen`, not assumed), whether dropping the
-  bootstrap changes anything, and how the arms decay as CEM converges.
-  Flags a saturated `p_surr` — constant, *or* pinned against a rail, which
-  is the same non-result and easy to miss in the range alone.
 - `slurm_run_array.sh`: array job, one `(algorithm, seed)` task per
   index; 6 algos × 5 seeds = 30 tasks for one `TARGET_ENV`.
+- `slurm_semarl_sweep.sh`: array job, one `(condition, seed)` task per
+  index — ERL, SEMARL at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive
+  SEMARL, TD3; 8 × 3 = 24 tasks. Runs `.venv/bin/python` directly, so
+  `uv sync` on the login node first.
+- Offline analysis tools (surrogate diagnostics, population dumps, surrogate
+  and gate benchmarks, critic ensemble) were removed once their questions
+  were settled; `notes.md` lists the commits to restore them from.
 
 ## Full experiment suite on slurm
 

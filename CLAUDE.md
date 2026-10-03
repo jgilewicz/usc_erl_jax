@@ -18,10 +18,9 @@ src/
   algos/semarl.py     # SEMARL: ERL + surrogate-evaluation frequency (p_surr) adapted to critic TD error
   baselines/          # SBX agent construction, vec-env wrapping, wandb callback
   common/             # replay buffer, rollout collection, TD3 core, EA/RL glue utils
-  modules/             # equinox nn modules (Actor, Critic, SharedStateEmbedding, ActorHead) + CEM
+  modules/             # equinox nn modules (Critic, SharedStateEmbedding, ActorHead) + CEM
   environments/        # env registry: mujoco, dm_control (dog-*), myosuite
   conf/                # Hydra configs (config.yaml + algorithm/*.yaml)
-scripts/               # post-hoc analysis, not shipped in the wheel
 ```
 
 ## Conventions
@@ -47,12 +46,9 @@ scripts/               # post-hoc analysis, not shipped in the wheel
 - Fitness estimators are scored against the true return, by metric-name
   suffix: `` = the `h_steps` bootstrap, `_noboot` = same with `γ^H·Q`
   dropped, `_critic` = `E_{s~D}[Q(s, π_i(s))]` over a replay batch.
-  `_ens` = the same averaged over `ensemble_size` critics
-  (`common/critic_ensemble.py`, a port of usc_erl's `EnsembleModule`;
-  0 = off). **Arms are measured, not used to select** — adding one cannot
-  change a baseline. Adding an arm means adding a suffix to the `arms` dict in
-  `semarl.py` and to `ARMS` in `surrogate_diagnostics.py` — the metric
-  names and the report table are generated from those.
+  **Arms are measured, not used to select** — adding one cannot change a
+  baseline. Adding an arm means adding a suffix to the `arms` dict in
+  `semarl.py`; the `surrogate_*` metric names are generated from it.
 - SEMARL runs **two vec envs**: `rl_env` (1 env, always a full `horizon`)
   and `pop_env` (`pop_size`, skipped entirely on surrogate generations).
   That skip is the env-step saving and it is why they cannot share a vec
@@ -61,12 +57,10 @@ scripts/               # post-hoc analysis, not shipped in the wheel
   `gen_env_steps`, never a fixed count.
 - `env_steps` is the x-axis for every performance claim — generations are
   not comparable across `p_surr` once the rollout is split.
-- PeVFA (policy-conditioned `Q(s, a, chi(W))`) was implemented and
-  removed: it ranked CEM siblings worse than the plain critic in every
-  run (`notes.md`). Candidate replacements are benchmarked offline, not
-  wired into the loop: `algorithm.dump_path` writes the population of
-  every real generation to an `.npz` (`common/population_dump.py`), and
-  `scripts/surrogate_benchmark.py` trains and scores surrogates on it.
+- Policy-conditioned surrogates (PeVFA, offline ridge/ranking/GP models),
+  critic-ensemble uncertainty and their offline tooling were built,
+  measured and removed — all negative. `notes.md` has the numbers and the
+  commits to restore the code from; check it before re-adding any of them.
 - `notes.md` holds the measured results and the list of refuted
   hypotheses. Check it before re-proposing a gating signal.
 
@@ -77,9 +71,8 @@ scripts/               # post-hoc analysis, not shipped in the wheel
 placeholder path). See README for the full sbatch sweep loop.
 
 `slurm_semarl_sweep.sh` is array-job-per-`(condition, seed)`: ERL, SEMARL
-at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive SEMARL, TD3, and a
-`p_surr=0` run with `dump_path` and a 5-critic ensemble (condition 8,
-tasks 24–26) — 9 × 3 = 27 tasks, tagged `sweep-v2`. Earlier `p_surr` runs are confounded by
+at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive SEMARL and TD3 —
+8 × 3 = 24 tasks, tagged `sweep-v2`. Earlier `p_surr` runs are confounded by
 replay ratio (`num_updates` did not scale with `gen_env_steps`). Jobs run
 `.venv/bin/python` directly — `uv sync` on the login node first; parallel
 `uv run` calls race on the shared uv cache. Takes `PROJECT_DIR` from the

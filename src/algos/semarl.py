@@ -12,13 +12,6 @@ import optax
 from jax.flatten_util import ravel_pytree
 
 import environments
-from common.critic_ensemble import (
-    EnsembleState,
-    ensemble_fitness,
-    init_ensemble,
-    make_ensemble_step,
-)
-from common.population_dump import PopulationDump
 from common.replay_buffer import Buffer
 from common.rollout import collect_parallel_episode
 from common.td3 import (
@@ -47,16 +40,6 @@ class SEMARLConfig(ERLConfig):
     p_surr_max: float = 0.9
     p_beta: float = 3.0
     td_ema_decay: float = 0.1
-
-    # .npz of every real generation's population, for offline surrogate benchmarks
-    # (scripts/surrogate_benchmark.py); None = off
-    dump_path: str | None = None
-    # critics trained like usc_erl's EnsembleModule, scored as the `_ens` arm
-    # and dumped per member for scripts/surrogate_benchmark.py; never
-    # selects. 0 = off (each member costs about one critic update per step).
-    # Measured: member disagreement does not point at the individuals the
-    # critic misplaces (std AUC 0.51-0.53) - see notes.md before gating on it
-    ensemble_size: int = 0
 
 
 # population and RL actor run in separate vec envs so a surrogate generation can skip the population rollout
@@ -276,26 +259,6 @@ def train(
     # projects the discounted bootstrap onto real_fitness's undiscounted scale (see _bootstrap_fitness).
     undiscount_scale = horizon * (1.0 - cfg.gamma) / (1.0 - cfg.gamma**horizon)
 
-    dump = PopulationDump(cfg.dump_path) if cfg.dump_path else None
-
-    ens_optimizer = optax.adam(cfg.critic_lr)
-    ensemble_step = make_ensemble_step(
-        ens_optimizer, cfg.gamma, cfg.ensemble_size
-    )
-    # jitted: called once per critic update, ~train_ratio * gen_env_steps times
-    ensemble_target = eqx.filter_jit(clipped_double_q)
-    ensemble: EnsembleState | None = None
-    if cfg.ensemble_size > 0:
-        key, ens_key = jax.random.split(key)
-        ensemble = init_ensemble(
-            obs_dim,
-            action_dim,
-            cfg.ensemble_size,
-            key=ens_key,
-            hidden_dims=cfg.critic_hidden_dims,
-            optimizer=ens_optimizer,
-        )
-
     pending_injection: int | None = None
     td_rel_ema: float | None = None
     env_steps = 0
@@ -455,19 +418,6 @@ def train(
                     ),
                     "_critic": critic_fitness,
                 }
-                ens_fitness = (
-                    None
-                    if ensemble is None
-                    else ensemble_fitness(
-                        ensemble.critics,
-                        td3_state.online.embedding,
-                        pop_heads,
-                        pv_states,
-                        undiscount_scale,
-                    )
-                )
-                if ens_fitness is not None:
-                    arms["_ens"] = jnp.mean(ens_fitness, axis=1)
                 for suffix, arm in arms.items():
                     arm_metrics[f"surrogate_abs_err{suffix}"] = float(
                         jnp.mean(jnp.abs(real_fitness - arm))
@@ -478,36 +428,12 @@ def train(
                     arm_metrics[f"surrogate_elite_overlap{suffix}"] = (
                         _elite_overlap(real_fitness, arm, cem.parents)
                     )
-                # warmup generations are skipped: the critic has not trained yet
-                if dump is not None and not warmup:
-                    dump.record(
-                        generation=generation,
-                        env_steps=env_steps,
-                        injected=-1
-                        if pending_injection is None
-                        else pending_injection,
-                        flat_pop=flat_pop,
-                        real=real_fitness,
-                        critic=critic_fitness,
-                        hstep=arms[""],
-                        fingerprint=dump.fingerprint(
-                            buffer, td3_state.online.embedding, pop_heads
-                        ),
-                        cem_mu=cem.mu,
-                        cem_cov=cem.cov,
-                        **(
-                            {}
-                            if ens_fitness is None
-                            else {"ensemble": ens_fitness}
-                        ),
-                    )
 
             cem.tell(fitness, flat_pop)
             pending_injection = None
 
             critic_losses = []
             actor_losses = []
-            ensemble_losses = []
             if not warmup:
                 # scales with steps actually collected: a fixed count gave p_surr=0.9 a 6x replay ratio
                 num_updates = int(cfg.train_ratio * gen_env_steps)
@@ -518,15 +444,6 @@ def train(
                         td3_state, batch, noise_key
                     )
                     critic_losses.append(critic_loss)
-                    if ensemble is not None:
-                        key, tgt_key, ens_key = jax.random.split(key, 3)
-                        _, q_next = ensemble_target(
-                            td3_state, batch, tgt_key, td3_cfg
-                        )
-                        ensemble, ens_loss = ensemble_step(
-                            ensemble, batch, q_next, ens_key
-                        )
-                        ensemble_losses.append(ens_loss)
                     if step % cfg.policy_freq == 0:
                         td3_state, actor_loss = actor_step(td3_state, batch)
                         actor_losses.append(actor_loss)
@@ -566,9 +483,6 @@ def train(
                 else float("nan"),
                 "fitness_critic_mean": float(jnp.mean(critic_fitness)),
                 "rl_return": rl_return,
-                "ensemble_loss": float(np.mean(ensemble_losses))
-                if ensemble_losses
-                else 0.0,
                 "critic_loss": float(np.mean(critic_losses))
                 if critic_losses
                 else 0.0,
@@ -600,9 +514,6 @@ def train(
     finally:
         rl_env.close()
         pop_env.close()
-        # saved even on a crash: a truncated run is still a usable dataset
-        if dump is not None:
-            dump.save()
 
     return td3_state
 
