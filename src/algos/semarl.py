@@ -53,7 +53,9 @@ class SEMARLConfig(ERLConfig):
     dump_path: str | None = None
     # critics trained like usc_erl's EnsembleModule, scored as the `_ens` arm
     # and dumped per member for scripts/surrogate_benchmark.py; never
-    # selects. 0 = off (each member costs about one critic update per step)
+    # selects. 0 = off (each member costs about one critic update per step).
+    # Measured: member disagreement does not point at the individuals the
+    # critic misplaces (std AUC 0.51-0.53) - see notes.md before gating on it
     ensemble_size: int = 0
 
 
