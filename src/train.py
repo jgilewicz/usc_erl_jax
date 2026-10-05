@@ -12,9 +12,8 @@ from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from algos.erl import ERLConfig
 from algos.erl import evaluate_actor as evaluate_erl_actor
 from algos.erl import train as train_erl
-from algos.semarl import SEMARLConfig
-from algos.semarl import evaluate_actor as evaluate_semarl_actor
-from algos.semarl import train as train_semarl
+from algos.sc_erl import SCERLConfig
+from algos.sc_erl import train as train_sc_erl
 from baselines.agents import build_agent
 from baselines.envs import build_vec_env
 from baselines.wandb_logging import WandbLoggingCallback
@@ -54,6 +53,9 @@ def _erl_kwargs(cfg: DictConfig) -> dict[str, Any]:
         ea_tau=algo_cfg.ea_tau,
         theta=algo_cfg.theta,
         h_steps=algo_cfg.h_steps,
+        eval_env_name=cfg.eval_env.id,
+        eval_interval=int(cfg.eval.interval),
+        eval_episodes=int(cfg.eval.episodes),
     )
 
 
@@ -69,17 +71,24 @@ def _run_erl(cfg: DictConfig) -> float:
     )
 
 
-def _run_semarl(cfg: DictConfig) -> float:
+def _run_sc_erl(cfg: DictConfig) -> float:
     algo_cfg = cfg.algorithm
-    semarl_cfg = SEMARLConfig(
+    sc_erl_cfg = SCERLConfig(
         **_erl_kwargs(cfg),
-        p_surr_min=algo_cfg.p_surr_min,
-        p_surr_max=algo_cfg.p_surr_max,
-        p_beta=algo_cfg.p_beta,
-        td_ema_decay=algo_cfg.td_ema_decay,
+        mode=algo_cfg.mode,
+        omega=algo_cfg.omega,
+        epsilon=algo_cfg.epsilon,
+        mad_k=algo_cfg.mad_k,
+        beta=algo_cfg.beta,
+        beta_lr=algo_cfg.beta_lr,
+        surrogate_batch=algo_cfg.surrogate_batch,
+        mc_samples=algo_cfg.mc_samples,
+        dropout_p=algo_cfg.dropout_p,
+        k_ensembles=algo_cfg.k_ensembles,
+        evidential_lam=algo_cfg.evidential_lam,
     )
-    td3_state = train_semarl(semarl_cfg, on_generation=wandb.log)
-    return evaluate_semarl_actor(
+    td3_state = train_sc_erl(sc_erl_cfg, on_generation=wandb.log)
+    return evaluate_erl_actor(
         cfg.eval_env.id,
         td3_state,
         episodes=cfg.eval.episodes,
@@ -122,7 +131,7 @@ def run_training(cfg: DictConfig) -> float:
             "dict[str, Any]", OmegaConf.to_container(cfg, resolve=True)
         ),
     )
-    dispatch = {"erl": _run_erl, "semarl": _run_semarl}
+    dispatch = {"erl": _run_erl, "sc_erl": _run_sc_erl}
     if cfg.algorithm.name in dispatch:
         # x-axis is interaction, not iteration: generation cost varies by algorithm
         wandb.define_metric("env_steps")

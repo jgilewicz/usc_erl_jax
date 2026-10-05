@@ -43,151 +43,88 @@ evolutionary-RL hybrid. Config: `src/conf/algorithm/erl.yaml`, impl:
 just train erl HalfCheetah-v5
 ```
 
-## SEMARL
+## SC-ERL
 
-[SEMARL](https://dl.acm.org/doi/10.1145/3795095.3805146) — ERL backbone
-(shared embedding, CEM, genetic soft update) where the *frequency* of
-surrogate evaluation adapts to critic error: an adaptive `p_surr` replaces
-ERL's fixed `theta` coin flip. Impl: `src/algos/semarl.py`, config:
-`src/conf/algorithm/semarl.yaml` (inherits `erl.yaml`).
-
-**Split rollout.** The RL actor and the population run in *separate* vec
-envs. The actor always runs a full `horizon` (it is the gradient learner
-and the only guaranteed source of fresh buffer data); the population
-rollout is what a surrogate generation skips entirely. That skip is the
-whole env-step saving — 11 000 → 1 000 steps per generation at
-`pop_size=10` — and it is impossible while both step in lockstep. On a
-surrogate generation selection runs on the batch-averaged critic value.
-
-`num_updates` scales with steps actually collected, not a fixed count:
-otherwise a surrogate generation silently inflates the update-to-data
-ratio ~11× and reads as "the gate helped".
+Port of usc_erl's `SurrogateController` onto the ERL backbone (shared
+embedding, CEM, genetic soft update). Each **individual** — not the whole
+generation — is either rolled out or scored by the critic. Impl:
+`src/algos/sc_erl.py`, config: `src/conf/algorithm/sc_erl.yaml` (inherits
+`erl.yaml`; `theta`/`h_steps` inert).
 
 ```text
-CEM.ask() ──► 10 × ActorHead over Z(s)
+CEM.ask() ──► pop × ActorHead   (slot 0: RL actor, 1: best-ever real, -1: elite)
                    │
-      p_surr = p_min + (p_max−p_min)·exp(−p_beta·|TD|_rel_ema)
-                   │   ← from the PREVIOUS generation's EMA: the
-                   │     rollout itself depends on this decision
-        ┌──────────┴──────────┐
-1−p_surr│                     │p_surr
-        ▼                     ▼
-┌─────────────────┐  ┌─────────────────┐
-│ REAL            │  │ SURROGATE       │
-├─────────────────┤  ├─────────────────┤
-│ rl_env   1×1000 │  │ rl_env   1×1000 │ ← always: gradient learner,
-│ pop_env 10×1000 │  │ pop_env skipped │   only guaranteed fresh data
-├─────────────────┤  ├─────────────────┤
-│  11 000 steps   │  │   1 000 steps   │ ← the 11× saving
-├─────────────────┤  ├─────────────────┤
-│ f = true return │  │ f = E[Q(s,π_i)] │
-│ arms scored ✓   │  │ no ground truth │
-└────────┬────────┘  └────────┬────────┘
-         └──────────┬─────────┘
-                    ▼
-           CEM.tell(f) ──► top-5 of 10 ──► new μ, Σ
-                    │
-                    ▼
-     TD3 updates × (train_ratio · steps collected this gen)
-                    │
-                    ▼
-     genetic_soft_update: champion head ──► RL actor
+   μ_i, σ_i = E_{s~D}[critic1 stats(s, π_i(s))]   (shared replay batch, vmapped)
+                   │
+   gate ── random:      real_i ~ Bernoulli(1 − omega)
+        └─ uncertainty: real_i = cv_i > median(cv) + mad_k·MAD(cv)  or  ε-coin
+                        cv_i = σ_i / (√|μ_i| + 1)
+                   │
+   rl_env  1×H  (always, stored)
+   pop_env P×H  (shadow: all step, only real_i stored + counted)
+                   │
+   f_i = true return            if real_i
+       = s·(μ_i − βσ_i) + offset  otherwise   (offset = mean bias on real_i)
+                   │
+   β ← Adam on residual variance over real_i   (uncertainty modes, ≥2 real)
+   CEM.tell(f), elite only from real_i
+   TD3 × train_ratio·(1 + n_real)·H   (one jit: lax.fori_loop)
 ```
 
-The surrogate is not free of the rollout it skips — it is trained on what
-that rollout collects:
+| mode | critic1 | σ |
+| --- | --- | --- |
+| `random` | `Critic` | none (σ = 0) |
+| `dropout` | `Critic(dropout=dropout_p)`, twin too | std over `mc_samples` MC passes |
+| `ensemble` | `k_ensembles` vmapped `Critic`s, bootstrapped Huber | std over members |
+| `evidential` | `EvidentialCritic`, NIG loss (`evidential_lam`) | √(β/(v(α−1))) |
 
-```text
-  population rollouts ──► buffer ──► critic ──► surrogate fitness
-         ▲                                              │
-         │                                              ▼
-         └────────────── CEM selection ◄────────────────┘
-              (only on REAL generations)
-```
+critic2 is always a plain `Critic` (MSE); the TD3 target is
+`min(point(critic1), critic2)`, the actor follows `point(critic1)`.
 
-Raising `p_surr` cuts the left edge of that loop: fewer population
-rollouts ⇒ the buffer sees only the RL actor's distribution ⇒ the critic
-loses the ability to rank *other* policies. So `p_surr` is bounded by the
-critic's appetite for policy-diverse data, not by fitness accuracy — that
-is the open question the `p_surr` sweep is meant to answer, not an
-assumption baked into the code.
-
-- **Relative TD error**: each generation, on a fresh replay batch,
-  `mean |r + γ(1−d)·min(Q1',Q2') − min(Q1,Q2)|` (`clipped_double_q`,
-  `absolute_td_error`) normalized by `mean|r|` from the same batch
-  (`relative_td_error`). `|TD|` is a per-step residual, so the
-  denominator has to be per-step too — `mean|Q|` is a discounted *return*,
-  which buries a factor of `(1−γ)` in the ratio and shrinks it further as
-  `Q` grows over training. Smoothed into `td_error_rel_ema`.
-- **Adaptive p_surr**:
-  `p_surr = p_surr_min + (p_surr_max−p_surr_min)·exp(−p_beta·|TD|_rel_ema)`
-  (`adaptive_p_surr`), from the previous generation's EMA — the choice has
-  to precede collection, since it decides whether the population rolls out
-  at all.
-- **Fitness estimators**, scored against the true return by metric-name
-  suffix. Only measurable on real generations: a surrogate generation has
-  no population rollout, so no ground truth and no `h_reward`.
-  - `` (none) — the `h_steps` bootstrap.
-  - `_noboot` — the same with `γ^H·Q` dropped. The bootstrap's share of
-    the value is exactly `γ^H` (8.1% at γ=0.99, H=250), so if this matches
-    the `H` arm the critic contributes nothing.
-  - `_critic` — `E_{s~D}[min(Q1,Q2)(s, π_i(s))]` over a replay batch.
-    What selects when the population rollout is skipped, at zero env
-    steps. Averaging over the batch is what makes it work: scored at a
-    single state it sits at chance.
-  - metrics per arm: `surrogate_elite_overlap*` (headline — `_cem_tell`
-    keeps `argsort(-scores)[:parents]` and discards the rest, so elite
-    membership is all selection consumes; **chance is 0.5**),
-    `surrogate_rank_corr*` (looser, scores pairs selection ignores),
-    `surrogate_abs_err*` (scale drift only).
-- `env_steps` / `env_steps_gen` — cumulative and per-generation
-  interaction cost. The x-axis for every performance claim.
-- `p_beta` is a dimensionless sensitivity constant on the relative error,
-  meant to be shared across envs (unlike a raw-`|TD|` threshold).
-- **Two inherited-but-inert params.** `theta` (`p_surr` replaces it) and
-  `h_steps`, which in SEMARL sizes the h-bootstrap *diagnostic* arm only —
-  nothing about training changes if you move it, because the bootstrap
-  never selects here. Both are live in `erl.py`. `h_steps` would become
-  live again only if a truncated-population generation were reintroduced
-  as a third mode between "full real rollout" and "no rollout at all".
-
-**Measured on HalfCheetah, see `notes.md` for the numbers.** Adapting `H`
-was dropped (`rank_corr` rises monotonically with `H`). The adaptive gate
-itself is so far indistinguishable from a fixed `p_surr`: no critic-derived
-signal (`|TD|_rel`, `|Q1−Q2|`, H/2-vs-H rank stability, critic-ensemble
-disagreement) predicts surrogate quality, and policy-conditioned surrogates
-(PeVFA and offline alternatives) rank siblings at chance. All tuning is
-HalfCheetah-only — `p_beta = 3.0` is set against its `|TD|_rel ≈ 0.21`,
-and the cross-env portability the `mean|r|` normalization is *for* is
-still untested.
-
+- **Shadow rollout**: gymnasium vec envs can't step a subset, so every
+  individual steps (≈ same wall-clock under async). Non-real returns go
+  only to metrics; the algorithm sees `observed = where(real, truth, 0)`.
+- **Anchor**: best-ever real-evaluated head re-enters after any
+  generation with a real rollout, unless it already is the CEM elite.
+- **RL injection**: every `rl_to_ea_sync_period` gens, only if `n_real > 0`.
 
 ```bash
-just train semarl HalfCheetah-v5
+just train sc_erl HalfCheetah-v5 algorithm.mode=ensemble
 ```
+
+### Metrics (wandb, x-axis `env_steps`)
+
+- `perf/`: `rl_return`, `eval_rl`, `eval_elite` (deterministic, every
+  `eval.interval` env steps, off-budget), `pop_true_best/mean`.
+- `cost/`: `env_steps_gen`, `real_frac`.
+- `train/`: `critic_loss`, `actor_loss`, `critic_updates`, `buffer_size`.
+- `select/`: `elite_overlap`, `rank_corr` (fitness CEM saw vs truth),
+  `*_surr` (calibrated surrogate on everyone vs truth), `regret`.
+- `gate/`: misranked = wrong side of the elite cut under the critic's μ
+  (σ left out so the label does not contain what `cv` scores);
+  `misranked_frac`, `precision`, `recall`; uncertainty modes add `auc`
+  (cv → misranked), `threshold`, `cv_mean/max`, `eps_frac`.
+
+ERL logs the same `perf/`, `cost/`, `train/`, `select/` groups.
 
 ## Tooling
 
-- `justfile`: `install`, `test`, `lint`/`lint-check`, `types`, `check`,
-  `train`, `train-all`.
-- `slurm_run_array.sh`: array job, one `(algorithm, seed)` task per
-  index; 6 algos × 5 seeds = 30 tasks for one `TARGET_ENV`.
-- `slurm_semarl_sweep.sh`: array job, one `(condition, seed)` task per
-  index — ERL, SEMARL at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive
-  SEMARL, TD3; 8 × 3 = 24 tasks. Runs `.venv/bin/python` directly, so
-  `uv sync` on the login node first.
-- Offline analysis tools (surrogate diagnostics, population dumps, surrogate
-  and gate benchmarks, critic ensemble) were removed once their questions
-  were settled; `notes.md` lists the commits to restore them from.
+- `justfile`: `install`, `lint`/`lint-check`, `types`, `check`, `train`,
+  `train-all`.
+- `slurm_run_array.sh`: the only slurm script; one `(condition, seed)`
+  per task — sac, ppo, td3, crossq, erl, sc_erl × 4 modes; 9 × 5 = 45
+  tasks. Needs `PROJECT_DIR`; runs `.venv/bin/python` directly, so
+  `uv sync` on the login node first. `EXTRA="..."` appends Hydra
+  overrides to every task in the array (keys must exist in that config).
 
 ## Full experiment suite on slurm
 
 ```bash
-export WANDB_API_KEY=...
+export WANDB_API_KEY=... PROJECT_DIR=/path/to/usc_erl_jax
 for env in HalfCheetah-v5 Hopper-v5 Walker2d-v5 Ant-v5 Swimmer-v5 \
            dog-stand dog-walk dog-trot dog-run \
            myoElbowPose1D6MRandom-v0 myoHandReachRandom-v0 \
            myoHandPenTwirlRandom-v0 myoHandObjHoldRandom-v0 myoLegWalk-v0; do
-  TARGET_ENV="$env" sbatch --array=0-29 slurm_run_array.sh
+  TARGET_ENV="$env" sbatch --array=0-44 slurm_run_array.sh
 done
 ```

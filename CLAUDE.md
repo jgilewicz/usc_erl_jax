@@ -7,7 +7,7 @@ Extends the global CLAUDE.md. Project-specific deltas only.
 - Python (per `pyproject.toml` `requires-python`), JAX + equinox + optax
   for ERL, [SBX](https://github.com/araffin/sbx) (stable-baselines3 on
   JAX) for baselines, Hydra for config, wandb for logging.
-- `uv` / `ruff` / `ty` / `pytest` — same as global rules.
+- `uv` / `ruff` / `ty` — same as global rules (no pytest suite here).
 
 ## Layout
 
@@ -15,10 +15,10 @@ Extends the global CLAUDE.md. Project-specific deltas only.
 src/
   train.py           # single Hydra entrypoint, baselines + ERL
   algos/erl.py        # ERL (EvoRainbow) training loop
-  algos/semarl.py     # SEMARL: ERL + surrogate-evaluation frequency (p_surr) adapted to critic TD error
+  algos/sc_erl.py     # SC-ERL: per-individual surrogate gate (random | dropout | ensemble | evidential)
   baselines/          # SBX agent construction, vec-env wrapping, wandb callback
-  common/             # replay buffer, rollout collection, TD3 core, EA/RL glue utils
-  modules/             # equinox nn modules (Critic, SharedStateEmbedding, ActorHead) + CEM
+  common/             # replay buffer, rollout, fused TD3, critic heads per mode, surrogate gate/LCB, metrics
+  modules/             # equinox nn modules (Critic, EvidentialCritic, SharedStateEmbedding, ActorHead) + CEM
   environments/        # env registry: mujoco, dm_control (dog-*), myosuite
   conf/                # Hydra configs (config.yaml + algorithm/*.yaml)
 ```
@@ -32,48 +32,42 @@ src/
   in `src/train.py` added to the `dispatch` map, not a new entrypoint.
 - Env registration goes through `environments.register_env` /
   `register_backend` — never `gym.register` directly in algo code.
-- ERL and SEMARL are separate files but share params: `semarl.yaml`
-  composes `erl.yaml` via `defaults`, `_run_semarl` reuses `_erl_kwargs`.
-  `SEMARLConfig` subclasses `ERLConfig` (adds
-  `p_surr_min/p_surr_max/p_beta/td_ema_decay`). SEMARL fixes the bootstrap
-  horizon at the inherited `h_steps` and ignores the inherited `theta` —
-  `p_surr` replaces it.
-- Surrogate quality is judged by `surrogate_elite_overlap` (CEM keeps
-  `argsort(-scores)[:parents]` and drops the rest of the ordering, so
-  elite membership is all selection consumes; chance is 0.5). Rank
-  correlation is the looser secondary view, `abs_err` only watches scale
-  drift.
-- Fitness estimators are scored against the true return, by metric-name
-  suffix: `` = the `h_steps` bootstrap, `_noboot` = same with `γ^H·Q`
-  dropped, `_critic` = `E_{s~D}[Q(s, π_i(s))]` over a replay batch.
-  **Arms are measured, not used to select** — adding one cannot change a
-  baseline. Adding an arm means adding a suffix to the `arms` dict in
-  `semarl.py`; the `surrogate_*` metric names are generated from it.
-- SEMARL runs **two vec envs**: `rl_env` (1 env, always a full `horizon`)
-  and `pop_env` (`pop_size`, skipped entirely on surrogate generations).
-  That skip is the env-step saving and it is why they cannot share a vec
-  env. Consequences: arms are only measurable on real generations (no
-  population rollout ⇒ no ground truth), and `num_updates` must scale with
-  `gen_env_steps`, never a fixed count.
-- `env_steps` is the x-axis for every performance claim — generations are
-  not comparable across `p_surr` once the rollout is split.
-- Policy-conditioned surrogates (PeVFA, offline ridge/ranking/GP models),
-  critic-ensemble uncertainty and their offline tooling were built,
-  measured and removed — all negative. `notes.md` has the numbers and the
-  commits to restore the code from; check it before re-adding any of them.
-- `notes.md` holds the measured results and the list of refuted
-  hypotheses. Check it before re-proposing a gating signal.
+- ERL and SC-ERL share params and plumbing: `sc_erl.yaml` composes
+  `erl.yaml`, `SCERLConfig` subclasses `ERLConfig`, `_run_sc_erl` reuses
+  `_erl_kwargs`, and `algos/erl.py` exposes the shared `Run` /
+  `build_run` / `train_and_merge` / `maybe_evaluate`. `theta`/`h_steps`
+  are inert in SC-ERL.
+- A surrogate mode = a `CriticHead` in `common/critic_heads.py`
+  (`build`, `point`, `loss`, `stats`). critic1 carries the mode; critic2
+  is always a plain `Critic` (usc_erl's asymmetric twin). Adding a mode =
+  one `match` case + `MODES`.
+- **Shadow rollout**: `pop_env` steps every individual; only gated-real
+  ones are stored and counted. The algorithm must only ever see
+  `observed = where(real, truth, 0)` — `truth` feeds metrics only.
+  Never route `truth` into calibration, β, CEM or the anchor.
+- Mixed fitness is calibrated by a per-generation offset measured on that
+  generation's real individuals (critic scale drifts between gens). With
+  no real individual the offset cannot change the ranking.
+- CEM elite comes only from real-evaluated individuals
+  (`CEM.tell(elite_candidates=...)`).
+- TD3 updates run as one `eqx.filter_jit` `lax.fori_loop`
+  (`make_td3_train`); pass `num_updates` as a `jnp` array or every new
+  count recompiles. `num_updates` scales with collected env steps.
+- Surrogate quality = `select/elite_overlap*`; gate quality = `gate/*`
+  with "misranked" = wrong side of the elite cut under μ alone (never
+  under the LCB: σ would sit in both label and score). Chance elite overlap is
+  `parents/pop_size`.
+- `env_steps` is the x-axis for every performance claim.
+- No `tests/` suite: verify with ruff, ty and a tiny-budget smoke run
+  (`total_steps=3000 algorithm.horizon=100 algorithm.pop_size=4 ...`).
+- `notes.md` (gitignored) holds measured results and refuted hypotheses —
+  §4.4 found cv/std gating ≈ random at equal cost. Check it before
+  re-proposing a gating signal.
 
 ## Slurm
 
-`slurm_run_array.sh` is array-job-per-`(algorithm, seed)` for one
-`TARGET_ENV`. Set `PROJECT_DIR` before submitting (currently a
-placeholder path). See README for the full sbatch sweep loop.
-
-`slurm_semarl_sweep.sh` is array-job-per-`(condition, seed)`: ERL, SEMARL
-at fixed `p_surr` ∈ {0, .25, .5, .75, .9}, adaptive SEMARL and TD3 —
-8 × 3 = 24 tasks, tagged `sweep-v2`. Earlier `p_surr` runs are confounded by
-replay ratio (`num_updates` did not scale with `gen_env_steps`). Jobs run
+`slurm_run_array.sh` is the only slurm script: array-job-per-`(condition,
+seed)` for one `TARGET_ENV` — sac, ppo, td3, crossq, erl, sc_erl × 4 modes,
+9 × 5 = 45 tasks. Takes `PROJECT_DIR` from the environment. Jobs run
 `.venv/bin/python` directly — `uv sync` on the login node first; parallel
-`uv run` calls race on the shared uv cache. Takes `PROJECT_DIR` from the
-environment.
+`uv run` calls race on the shared uv cache.

@@ -1,0 +1,27 @@
+# @package algorithm
+# SC-ERL (usc_erl's surrogate controller) on the ERL backbone: every ERL
+# parameter is shared; theta/h_steps are inherited but inert here.
+defaults:
+  - erl
+  - _self_
+
+name: sc_erl
+
+# per-individual gate: random | dropout | ensemble | evidential
+mode: random
+# random mode: P(surrogate) per individual; 0.75 matches the ~25% real
+# rate of the MAD+epsilon gate (equal-budget control)
+omega: 0.75
+# uncertainty modes: real rollout if cv > median(cv) + mad_k * MAD(cv),
+# or with probability epsilon regardless
+epsilon: 0.142
+mad_k: 2.483
+# LCB = mu - beta * sigma; beta adapted online on real rollouts
+beta: 0.432
+beta_lr: 1e-3
+# shared replay states every individual is scored on
+surrogate_batch: 1024
+mc_samples: 25
+dropout_p: 0.1
+k_ensembles: 5
+evidential_lam: 0.1

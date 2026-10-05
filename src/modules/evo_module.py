@@ -88,8 +88,13 @@ class CEM:
         return inds
 
     def tell(
-        self, scores: jax.Array, solutions: jax.Array
+        self,
+        scores: jax.Array,
+        solutions: jax.Array,
+        elite_candidates: jax.Array | None = None,
     ) -> tuple[jax.Array, jax.Array]:
+        # elite_candidates: only these may become the elite; with none of
+        # them in this generation the previous elite survives
         self.mu, self.cov, self.damp, elite_idx = _cem_tell(
             scores,
             solutions,
@@ -101,6 +106,10 @@ class CEM:
             self.tau,
             self.num_params,
         )
-        self.elite = solutions[elite_idx]
+        if elite_candidates is None:
+            self.elite = solutions[elite_idx]
+        elif bool(jnp.any(elite_candidates)):
+            masked = jnp.where(elite_candidates, scores, -jnp.inf)
+            self.elite = solutions[jnp.argmax(masked)]
 
         return (self.mu, self.cov)

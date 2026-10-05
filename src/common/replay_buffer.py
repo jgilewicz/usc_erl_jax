@@ -57,6 +57,26 @@ def _gather(
     }
 
 
+BufferData = tuple[
+    jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray
+]
+
+
+def sample_batch(
+    data: BufferData, size: jax.Array, key: jax.Array, batch_size: int
+) -> dict[str, jnp.ndarray]:
+    # traceable: lets the whole TD3 update loop run inside one jit
+    indices = jax.random.randint(key, (batch_size,), 0, size)
+    state, action, reward, next_state, done = data
+    return {
+        "state": state[indices],
+        "action": action[indices],
+        "reward": reward[indices],
+        "next_state": next_state[indices],
+        "done": done[indices],
+    }
+
+
 class Buffer:
     def __init__(self, capacity: int, state_dim: int, action_dim: int) -> None:
         self.capacity = capacity
@@ -101,6 +121,16 @@ class Buffer:
             raise ValueError(f"batch_size must be > 0, got {batch_size}")
         indices = jax.random.randint(rng, (batch_size,), 0, self.size)
         return self[indices]
+
+    @property
+    def data(self) -> BufferData:
+        return (
+            self.state,
+            self.action,
+            self.reward,
+            self.next_state,
+            self.done,
+        )
 
     def __getitem__(self, indices: jnp.ndarray) -> dict[str, jnp.ndarray]:
         return _gather(

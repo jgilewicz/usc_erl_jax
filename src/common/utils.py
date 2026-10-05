@@ -1,4 +1,3 @@
-import math
 from typing import TypeVar
 
 import equinox as eqx
@@ -42,24 +41,3 @@ def h_step_bootstrap(
     return (
         discounted_rewards + jnp.pow(gamma, h_steps) * q_value * bootstrap_mask
     )
-
-
-@eqx.filter_jit
-def absolute_td_error(
-    reward: jax.Array,
-    gamma: float,
-    q_prim: jax.Array,
-    q: jax.Array,
-    dones: jax.Array,
-):
-    return jnp.abs(reward + gamma * (1 - dones) * q_prim - q).mean()
-
-
-def relative_td_error(abs_td_error: float, reward_scale: float) -> float:
-    return abs_td_error / (reward_scale + 1e-6)
-
-
-def adaptive_p_surr(
-    p_min: float, p_max: float, beta: float, rel_td_error: float
-) -> float:
-    return p_min + (p_max - p_min) * math.exp(-beta * rel_td_error)
