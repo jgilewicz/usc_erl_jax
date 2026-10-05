@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 import gymnasium as gym
-import myosuite  # noqa: F401  # import registers the myo* env ids with gymnasium
 
 from environments.base import EnvSpec, register_backend, register_env
 
@@ -17,6 +16,10 @@ _TASKS = (
 
 
 def _make(task_id: str, /, **kwargs: Any) -> gym.Env:
+    # lazy: registers the myo* ids with gymnasium, but only in workers that
+    # build a myosuite env
+    import myosuite  # noqa: F401
+
     return gym.make(task_id, **kwargs)
 
 

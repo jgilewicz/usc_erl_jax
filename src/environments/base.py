@@ -5,8 +5,6 @@ from functools import partial
 from typing import Any, Literal, Protocol
 
 import gymnasium as gym
-import jax.numpy as jnp
-import numpy as np
 
 Backend = Literal["dmc", "mujoco", "myosuite"]
 
@@ -78,7 +76,13 @@ def make_vec_env(
         )
     else:
         venv = gym.vector.SyncVectorEnv(env_fns)
-    return JaxVectorEnv(venv) if to_jax else venv
+    if not to_jax:
+        return venv
+    # imported here, not at module top: env worker processes import this
+    # module too, and pulling JAX into each of them costs ~0.5 GB RSS
+    from environments.jax_vector import JaxVectorEnv
+
+    return JaxVectorEnv(venv)
 
 
 def _check_spec(env: gym.Env, spec: EnvSpec) -> None:
@@ -112,32 +116,4 @@ def _check_spec(env: gym.Env, spec: EnvSpec) -> None:
         raise ValueError(
             f"{spec.name}: action dim {act.shape[0]} "
             f"!= expected {spec.expected_act_dim}"
-        )
-
-
-class JaxVectorEnv(gym.vector.VectorWrapper):
-    def reset(
-        self,
-        *,
-        seed: int | list[int] | None = None,
-        options: dict[str, Any] | None = None,
-    ) -> tuple[jnp.ndarray, dict[str, Any]]:
-        # ty: ignore[invalid-argument-type]
-        obs, info = self.env.reset(seed=seed, options=options)
-        return jnp.asarray(obs), info
-
-    def step(
-        self, actions: Any
-    ) -> tuple[
-        jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, dict[str, Any]
-    ]:
-        obs, reward, terminated, truncated, info = self.env.step(
-            np.asarray(actions)
-        )
-        return (
-            jnp.asarray(obs),
-            jnp.asarray(reward, dtype=jnp.float32),
-            jnp.asarray(terminated, dtype=jnp.bool_),
-            jnp.asarray(truncated, dtype=jnp.bool_),
-            info,
         )

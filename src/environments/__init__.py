@@ -2,7 +2,6 @@ from environments import deepmind_control_env as deepmind_control_env
 from environments import mujoco_env as mujoco_env
 from environments import myo_suite_env as myo_suite_env
 from environments.base import EnvSpec as EnvSpec
-from environments.base import JaxVectorEnv as JaxVectorEnv
 from environments.base import get_spec as get_spec
 from environments.base import make_env as make_env
 from environments.base import make_vec_env as make_vec_env

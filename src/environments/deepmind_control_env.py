@@ -4,9 +4,7 @@ import warnings
 from typing import Any
 
 import gymnasium as gym
-from dm_control import suite
 from gymnasium.wrappers import FlattenObservation
-from shimmy.dm_control_compatibility import DmControlCompatibilityV0
 
 from environments.base import EnvSpec, register_backend, register_env
 
@@ -28,6 +26,11 @@ def _make(
     render_mode: str | None = None,
     **task_kwargs: Any,
 ) -> gym.Env:
+    # backend imports stay inside the builder: every env worker process
+    # imports this module, and only dmc workers should pay for dm_control
+    from dm_control import suite
+    from shimmy.dm_control_compatibility import DmControlCompatibilityV0
+
     domain, task = task_id.split("-", 1)
     dm_env = suite.load(
         domain_name=domain,
