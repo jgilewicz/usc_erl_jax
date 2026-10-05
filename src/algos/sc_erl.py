@@ -52,7 +52,9 @@ class SCERLConfig(ERLConfig):
     # `theta`/`h_steps` inherited but inert: the per-individual gate
     # replaces ERL's per-generation coin
     mode: str = "random"
-    # P(surrogate) per individual, random mode only
+    # ablation: keep the mode's critic but gate at random (omega)
+    random_gate: bool = False
+    # P(surrogate) per individual under the random gate
     omega: float = 0.75
     # P(forced real rollout) per individual on top of the cv gate
     epsilon: float = 0.142
@@ -89,8 +91,12 @@ class SCERLConfig(ERLConfig):
             raise ValueError(f"invalid SCERLConfig: {'; '.join(failed)}")
 
     @property
-    def uses_uncertainty(self) -> bool:
+    def has_sigma(self) -> bool:
         return self.mode != "random"
+
+    @property
+    def uses_uncertainty(self) -> bool:
+        return self.has_sigma and not self.random_gate
 
 
 @dataclass
@@ -290,7 +296,7 @@ def _surrogate_metrics(
     metrics = selection_metrics(
         truth, calibrated.fitness, calibrated.surrogate, parents
     ) | gate_metrics(truth, mu, decision.real, parents)
-    if cfg.uses_uncertainty:
+    if cfg.has_sigma:
         metrics |= uncertainty_gate_metrics(
             truth,
             mu,
@@ -334,7 +340,7 @@ def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
     }
     if warmup:
         return metrics
-    if cfg.uses_uncertainty and n_real >= 2:
+    if cfg.has_sigma and n_real >= 2:
         _fit_beta(run, sc, observed, decision, mu, sigma)
     metrics |= _surrogate_metrics(
         cfg, run.cem.parents, truth, mu, calibrated, decision

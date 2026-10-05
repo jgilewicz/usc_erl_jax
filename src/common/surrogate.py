@@ -58,15 +58,15 @@ def gate(
     uses_uncertainty: bool,
 ) -> Gate:
     coin = jax.random.uniform(key, mu.shape)
-    if not uses_uncertainty:
-        # omega = P(surrogate) per individual
-        none = jnp.zeros(mu.shape, dtype=bool)
-        return Gate(
-            coin > omega, none, jnp.zeros_like(mu), jnp.asarray(jnp.nan)
-        )
+    # computed under the random gate too: its AUC is then measured without
+    # cv having steered which individuals were selected
     cv = jnp.nan_to_num(
         sigma / (jnp.sqrt(jnp.abs(mu)) + 1.0), nan=0.0, posinf=1e3, neginf=0.0
     )
+    if not uses_uncertainty:
+        # omega = P(surrogate) per individual
+        none = jnp.zeros(mu.shape, dtype=bool)
+        return Gate(coin > omega, none, cv, jnp.asarray(jnp.nan))
     median = jnp.median(cv)
     threshold = median + mad_k * jnp.median(jnp.abs(cv - median))
     deterministic = cv > threshold

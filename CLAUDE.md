@@ -57,6 +57,8 @@ src/
   with "misranked" = wrong side of the elite cut under μ alone (never
   under the LCB: σ would sit in both label and score). Chance elite overlap is
   `parents/pop_size`.
+- The mode changes TD3 (critic1 is the actor's critic), so gate claims
+  need the same mode with `random_gate=true` at equal `real_frac`.
 - `env_steps` is the x-axis for every performance claim.
 - No `tests/` suite: verify with ruff, ty and a tiny-budget smoke run
   (`total_steps=3000 algorithm.horizon=100 algorithm.pop_size=4 ...`).
@@ -68,6 +70,6 @@ src/
 
 `slurm_run_array.sh` is the only slurm script: array-job-per-`(condition,
 seed)` for one `TARGET_ENV` — sac, ppo, td3, crossq, erl, sc_erl × 4 modes,
-9 × 5 = 45 tasks. `PROJECT_DIR` defaults to `SLURM_SUBMIT_DIR`. Jobs run
+3 σ-modes × `random_gate`, 12 × 5 = 60 tasks. `PROJECT_DIR` defaults to `SLURM_SUBMIT_DIR`. Jobs run
 `.venv/bin/python` directly — `uv sync` on the login node first; parallel
 `uv run` calls race on the shared uv cache.

@@ -1,9 +1,10 @@
 #!/bin/bash -l
 # One (condition, seed) pair per array task, for a single TARGET_ENV.
-# 9 conditions x 5 seeds = 45 tasks: SBX baselines, ERL, SC-ERL x 4 modes.
+# 12 conditions x 5 seeds = 60 tasks: SBX baselines, ERL, SC-ERL x 4 modes,
+# and the 3 uncertainty critics under a random gate (critic-vs-gate ablation).
 #
 #   cd /path/to/usc_erl_jax && TARGET_ENV=HalfCheetah-v5 \
-#     sbatch --array=0-44 slurm_run_array.sh
+#     sbatch --array=0-59 slurm_run_array.sh
 #
 # Task id = condition_index * 5 + seed, e.g. only SC-ERL ensemble
 # (condition 7): sbatch --array=35-39 slurm_run_array.sh
@@ -16,7 +17,7 @@
 # n_envs (SBX baselines' vec-env count) follows SLURM_CPUS_PER_TASK. ERL
 # runs pop_size+1 env workers, SC-ERL pop_size+1 plus 2*eval.episodes for
 # evaluation, regardless of -c. Raise -c if a run is CPU-bound, e.g.
-#   sbatch --array=0-44 --cpus-per-task=16 slurm_run_array.sh
+#   sbatch --array=0-59 --cpus-per-task=16 slurm_run_array.sh
 
 #SBATCH -N 1
 #SBATCH -c 8
@@ -47,6 +48,10 @@ CONDITIONS=(
   "sc_erl-dropout|algorithm=sc_erl algorithm.mode=dropout"
   "sc_erl-ensemble|algorithm=sc_erl algorithm.mode=ensemble"
   "sc_erl-evidential|algorithm=sc_erl algorithm.mode=evidential"
+  # omega=0.79 matches the ~21% real rate the uncertainty gate measured
+  "sc_erl-dropout-rgate|algorithm=sc_erl algorithm.mode=dropout algorithm.random_gate=true algorithm.omega=0.79"
+  "sc_erl-ensemble-rgate|algorithm=sc_erl algorithm.mode=ensemble algorithm.random_gate=true algorithm.omega=0.79"
+  "sc_erl-evidential-rgate|algorithm=sc_erl algorithm.mode=evidential algorithm.random_gate=true algorithm.omega=0.79"
 )
 SEEDS=(0 1 2 3 4)
 N_SEEDS=${#SEEDS[@]}

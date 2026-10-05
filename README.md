@@ -66,7 +66,7 @@ CEM.ask() ──► pop × ActorHead   (slot 0: RL actor, 1: best-ever real, -1:
    f_i = true return            if real_i
        = s·(μ_i − βσ_i) + offset  otherwise   (offset = mean bias on real_i)
                    │
-   β ← Adam on residual variance over real_i   (uncertainty modes, ≥2 real)
+   β ← Adam on residual variance over real_i   (modes with σ, ≥2 real)
    CEM.tell(f), elite only from real_i
    TD3 × train_ratio·(1 + n_real)·H   (one jit: lax.fori_loop)
 ```
@@ -80,6 +80,11 @@ CEM.ask() ──► pop × ActorHead   (slot 0: RL actor, 1: best-ever real, -1:
 
 critic2 is always a plain `Critic` (MSE); the TD3 target is
 `min(point(critic1), critic2)`, the actor follows `point(critic1)`.
+
+- **Critic-vs-gate ablation**: `algorithm.random_gate=true` keeps the
+  mode's critic (TD3, σ, β fit, `gate/auc` logging) but gates by `omega`.
+  The mode changes TD3 itself, so a mode beating `random` does not
+  credit the gate until it also beats its own `random_gate` run.
 
 - **Shadow rollout**: gymnasium vec envs can't step a subset, so every
   individual steps (≈ same wall-clock under async). Non-real returns go
@@ -102,8 +107,9 @@ just train sc_erl HalfCheetah-v5 algorithm.mode=ensemble
   `*_surr` (calibrated surrogate on everyone vs truth), `regret`.
 - `gate/`: misranked = wrong side of the elite cut under the critic's μ
   (σ left out so the label does not contain what `cv` scores);
-  `misranked_frac`, `precision`, `recall`; uncertainty modes add `auc`
-  (cv → misranked), `threshold`, `cv_mean/max`, `eps_frac`.
+  `misranked_frac`, `precision`, `recall`; modes with σ add `auc`
+  (cv → misranked), `cv_mean/max`, and under the uncertainty gate
+  `threshold`, `eps_frac`.
 
 ERL logs the same `perf/`, `cost/`, `train/`, `select/` groups.
 
@@ -112,8 +118,8 @@ ERL logs the same `perf/`, `cost/`, `train/`, `select/` groups.
 - `justfile`: `install`, `lint`/`lint-check`, `types`, `check`, `train`,
   `train-all`.
 - `slurm_run_array.sh`: the only slurm script; one `(condition, seed)`
-  per task — sac, ppo, td3, crossq, erl, sc_erl × 4 modes; 9 × 5 = 45
-  tasks. Run `sbatch` from the checkout (or set `PROJECT_DIR`); runs `.venv/bin/python` directly, so
+  per task — sac, ppo, td3, crossq, erl, sc_erl × 4 modes, 3 σ-modes
+  with `random_gate`; 12 × 5 = 60 tasks. Run `sbatch` from the checkout (or set `PROJECT_DIR`); runs `.venv/bin/python` directly, so
   `uv sync` on the login node first. `EXTRA="..."` appends Hydra
   overrides to every task in the array (keys must exist in that config).
 

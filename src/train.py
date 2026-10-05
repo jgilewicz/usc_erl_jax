@@ -76,6 +76,7 @@ def _run_sc_erl(cfg: DictConfig) -> float:
     sc_erl_cfg = SCERLConfig(
         **_erl_kwargs(cfg),
         mode=algo_cfg.mode,
+        random_gate=algo_cfg.random_gate,
         omega=algo_cfg.omega,
         epsilon=algo_cfg.epsilon,
         mad_k=algo_cfg.mad_k,

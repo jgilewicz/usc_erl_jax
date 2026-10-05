@@ -9,6 +9,8 @@ name: sc_erl
 
 # per-individual gate: random | dropout | ensemble | evidential
 mode: random
+# ablation: keep the mode's critic (TD3 + sigma) but gate at random by omega
+random_gate: false
 # random mode: P(surrogate) per individual; 0.75 matches the ~25% real
 # rate of the MAD+epsilon gate (equal-budget control)
 omega: 0.75
