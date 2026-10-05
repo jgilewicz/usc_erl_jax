@@ -2,7 +2,7 @@
 # One (condition, seed) pair per array task, for a single TARGET_ENV.
 # 9 conditions x 5 seeds = 45 tasks: SBX baselines, ERL, SC-ERL x 4 modes.
 #
-#   PROJECT_DIR=/path/to/usc_erl_jax TARGET_ENV=HalfCheetah-v5 \
+#   cd /path/to/usc_erl_jax && TARGET_ENV=HalfCheetah-v5 \
 #     sbatch --array=0-44 slurm_run_array.sh
 #
 # Task id = condition_index * 5 + seed, e.g. only SC-ERL ensemble
@@ -31,7 +31,8 @@
 set -euo pipefail
 
 ENV="${TARGET_ENV:?set TARGET_ENV, e.g. TARGET_ENV=HalfCheetah-v5}"
-PROJECT_DIR="${PROJECT_DIR:?set PROJECT_DIR to the cluster checkout}"
+# default: the directory sbatch was run from (the checkout)
+PROJECT_DIR="${PROJECT_DIR:-${SLURM_SUBMIT_DIR:?run sbatch from the checkout or set PROJECT_DIR}}"
 TOTAL_STEPS="${TOTAL_STEPS:-1_000_000}"
 TAG="${TAG:-sc-erl-v1}"
 

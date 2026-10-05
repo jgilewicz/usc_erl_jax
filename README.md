@@ -113,7 +113,7 @@ ERL logs the same `perf/`, `cost/`, `train/`, `select/` groups.
   `train-all`.
 - `slurm_run_array.sh`: the only slurm script; one `(condition, seed)`
   per task — sac, ppo, td3, crossq, erl, sc_erl × 4 modes; 9 × 5 = 45
-  tasks. Needs `PROJECT_DIR`; runs `.venv/bin/python` directly, so
+  tasks. Run `sbatch` from the checkout (or set `PROJECT_DIR`); runs `.venv/bin/python` directly, so
   `uv sync` on the login node first. `EXTRA="..."` appends Hydra
   overrides to every task in the array (keys must exist in that config).
 
