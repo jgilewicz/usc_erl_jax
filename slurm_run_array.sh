@@ -12,7 +12,8 @@
 # Optional: TOTAL_STEPS (default 1_000_000), TAG (extra wandb tag),
 # EXTRA (space-separated Hydra overrides appended to every task, e.g.
 # EXTRA="algorithm.pop_size=20" - only valid for conditions whose config
-# has those keys).
+# has those keys), SUFFIX (appended to the condition name, so an EXTRA
+# variant gets its own wandb run name and outputs dir, e.g. SUFFIX=-ab2).
 #
 # n_envs (SBX baselines' vec-env count) follows SLURM_CPUS_PER_TASK. ERL
 # runs pop_size+1 env workers, SC-ERL pop_size+1 plus 2*eval.episodes for
@@ -59,7 +60,7 @@ N_SEEDS=${#SEEDS[@]}
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 CONDITION="${CONDITIONS[$((TASK_ID / N_SEEDS))]}"
 SEED="${SEEDS[$((TASK_ID % N_SEEDS))]}"
-NAME="${CONDITION%%|*}"
+NAME="${CONDITION%%|*}${SUFFIX:-}"
 read -r -a OVERRIDES <<<"${CONDITION#*|} ${EXTRA:-}"
 ENV_SLUG="${ENV//\//_}"
 RUN_NAME="${NAME}_${ENV_SLUG}_s${SEED}"

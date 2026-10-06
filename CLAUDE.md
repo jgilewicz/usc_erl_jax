@@ -20,7 +20,6 @@ src/
   common/             # replay buffer, rollout, fused TD3, critic heads per mode, surrogate gate/LCB, metrics
   modules/             # equinox nn modules (Critic, EvidentialCritic, SharedStateEmbedding, ActorHead) + CEM
   environments/        # env registry: mujoco, dm_control (dog-*), myosuite
-  analysis/            # offline scripts on run dumps (horizon_sim)
   conf/                # Hydra configs (config.yaml + algorithm/*.yaml)
 ```
 
@@ -60,9 +59,8 @@ src/
   `parents/pop_size`.
 - The mode changes TD3 (critic1 is the actor's critic), so gate claims
   need the same mode with `random_gate=true` at equal `real_frac`.
-- `horizon_probe` / `analysis/horizon_sim.py`: per-individual horizon
-  allocation tested offline on shadow trajectories. The probe is metric
-  only, same rule as `truth`.
+- `horizon_probe`: per-step shadow trajectories + own-state critic stats
+  for offline analysis. Metric only, same rule as `truth`.
 - `env_steps` is the x-axis for every performance claim.
 - No `tests/` suite: verify with ruff, ty and a tiny-budget smoke run
   (`total_steps=3000 algorithm.horizon=100 algorithm.pop_size=4 ...`).

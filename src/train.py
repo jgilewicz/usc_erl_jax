@@ -90,6 +90,7 @@ def _run_sc_erl(cfg: DictConfig) -> float:
         dropout_p=algo_cfg.dropout_p,
         k_ensembles=algo_cfg.k_ensembles,
         evidential_lam=algo_cfg.evidential_lam,
+        actor_beta=algo_cfg.actor_beta,
         probe_path=str(Path(HydraConfig.get().runtime.output_dir) / PROBE_FILE)
         if algo_cfg.horizon_probe
         else None,

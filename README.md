@@ -81,6 +81,9 @@ CEM.ask() ──► pop × ActorHead   (slot 0: RL actor, 1: best-ever real, -1:
 critic2 is always a plain `Critic` (MSE); the TD3 target is
 `min(point(critic1), critic2)`, the actor follows `point(critic1)`.
 
+- **Uncertainty in the actor**: `algorithm.actor_beta` makes the TD3 actor
+  maximise `μ − actor_beta·σ` of critic1 (> 0 pessimistic, < 0
+  optimistic; σ-modes only).
 - **Critic-vs-gate ablation**: `algorithm.random_gate=true` keeps the
   mode's critic (TD3, σ, β fit, `gate/auc` logging) but gates by `omega`.
   The mode changes TD3 itself, so a mode beating `random` does not
@@ -105,16 +108,7 @@ just train sc_erl HalfCheetah-v5 algorithm.mode=ensemble
   states, replay-batch μ/σ, truth.
 - metric only, never fed back to the algorithm.
 
-`python -m analysis.horizon_sim <npz>... [--thirds]` (from `src/`)
-replays evaluation-allocation policies at budget `b·P·H` env steps:
-- `replay_critic+random_full`: current SC-ERL (random full episodes,
-  replay critic for the rest);
-- `uniform_h`: everyone `b·H` steps + tail (`critic` / `reward`
-  extrapolation / `none`);
-- `h0=… <selector>`: everyone `h0` steps, the rest of the budget extends
-  the selected individuals to full H; selectors `random`, `cut` (closest
-  to the elite cut), `sigma_prefix`, `cv_prefix`, `sigma_at_h0`, `oracle`.
-- also AUC of each signal vs misranked-under-`h0`-estimate.
+Offline analysis of the dump lives outside the repo (results in `notes.md`).
 
 ### Metrics (wandb, x-axis `env_steps`)
 

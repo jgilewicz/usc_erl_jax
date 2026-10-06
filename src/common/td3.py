@@ -37,6 +37,9 @@ class TD3Config(NamedTuple):
     action_limit: float = 1.0
     policy_freq: int = 2
     batch_size: int = 256
+    # actor maximises mu - actor_beta * sigma of critic1: > 0 pessimistic,
+    # < 0 optimistic, 0 = point estimate
+    actor_beta: float = 0.0
 
 
 Batch = dict[str, jnp.ndarray]
@@ -157,8 +160,11 @@ def _actor_update(
     ) -> jax.Array:
         embedding, actor = embedding_actor
         action = jax.vmap(actor)(jax.vmap(embedding)(batch["state"]))
-        q = head.point(state.online.critic1, batch["state"], action, key)
-        return -jnp.mean(q)
+        critic1 = state.online.critic1
+        if cfg.actor_beta == 0.0:
+            return -jnp.mean(head.point(critic1, batch["state"], action, key))
+        mu, sigma = head.stats(critic1, batch["state"], action, key)
+        return -jnp.mean(mu - cfg.actor_beta * sigma)
 
     embedding_actor = (state.online.embedding, state.online.actor)
     loss, grads = eqx.filter_value_and_grad(loss_fn)(embedding_actor)

@@ -35,26 +35,6 @@ packages = [
     "src/modules",
 ]
 
-[dependency-groups]
-dev = [
-    "pytest>=8.3",
-]
-
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-testpaths = ["tests"]
-filterwarnings = [
-    "error",
-    # dm_control sets .shape on numpy arrays; upstream, unfixable here.
-    "ignore:Setting the shape on a NumPy array:DeprecationWarning",
-    # myosuite declares float64 Box bounds that gymnasium casts to float32.
-    "ignore:.*precision lowered by casting to float32:UserWarning",
-    # tensorflow-probability (pulled in by sbx) touches deprecated jax.core
-    # attributes at import time; nothing we can patch here.
-    "ignore:jax.core.pytype_aval_mappings is deprecated:DeprecationWarning",
-    "ignore:jax.core.this is deprecated:DeprecationWarning",
-]
-
 [tool.ruff]
 line-length = 80
 

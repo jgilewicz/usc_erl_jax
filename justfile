@@ -13,10 +13,6 @@ default:
 install:
     uv sync
 
-# run the test suite (pass extra args: just test tests/baselines -k wandb)
-test *args:
-    uv run pytest -q {{args}}
-
 # lint + autofix + format
 lint:
     uv run ruff check --fix .
@@ -31,7 +27,7 @@ lint-check:
 types:
     uv run ty check src
 
-# everything: lint-check, types, tests
+# everything: lint-check, types
 check: lint-check types
 
 # train one algorithm; extra tokens are Hydra overrides
