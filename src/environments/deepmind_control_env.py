@@ -8,14 +8,6 @@ from gymnasium.wrappers import FlattenObservation
 
 from environments.base import EnvSpec, register_backend, register_env
 
-# dm_control's named-index code sets .shape on numpy arrays, deprecated in numpy 2.5.
-warnings.filterwarnings(
-    "ignore",
-    message="Setting the shape on a NumPy array has been deprecated",
-    category=DeprecationWarning,
-    module="dm_control",
-)
-
 _DOG_TASKS = ("stand", "walk", "trot", "run")
 
 
@@ -36,6 +28,15 @@ def _make(
         domain_name=domain,
         task_name=task,
         task_kwargs=task_kwargs or None,
+    )
+    # after the import: dm_control.composer.environment runs
+    # simplefilter("always", DeprecationWarning) at import time, which
+    # turned its numpy-2.5 `.shape =` warning into GBs of slurm stderr
+    warnings.filterwarnings(
+        "ignore",
+        message="Setting the shape on a NumPy array has been deprecated",
+        category=DeprecationWarning,
+        module="dm_control",
     )
     env = DmControlCompatibilityV0(dm_env, render_mode=render_mode)
     return FlattenObservation(env)
