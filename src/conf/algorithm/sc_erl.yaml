@@ -27,3 +27,6 @@ mc_samples: 25
 dropout_p: 0.1
 k_ensembles: 5
 evidential_lam: 0.1
+# dump per-step shadow rewards + critic stats on each individual's own
+# states to <hydra run dir>/horizon_probe.npz (metric only; costs compute)
+horizon_probe: false

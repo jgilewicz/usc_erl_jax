@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import equinox as eqx
@@ -25,6 +26,7 @@ from algos.erl import (
     train_and_merge,
 )
 from common.critic_heads import MODES, CriticHead, make_head
+from common.horizon_probe import HorizonProbe, StepRecorder, own_state_stats
 from common.metrics import (
     gate_metrics,
     selection_metrics,
@@ -69,6 +71,8 @@ class SCERLConfig(ERLConfig):
     dropout_p: float = 0.1
     k_ensembles: int = 5
     evidential_lam: float = 0.1
+    # dump per-step shadow rewards + own-state critic stats (metric only)
+    probe_path: str | None = None
 
     def __post_init__(self) -> None:
         checks = {
@@ -85,6 +89,8 @@ class SCERLConfig(ERLConfig):
             or self.mc_samples >= 2,
             "k_ensembles must be >= 2": self.mode != "ensemble"
             or self.k_ensembles >= 2,
+            "probe_path needs a mode with sigma": self.probe_path is None
+            or self.mode != "random",
         }
         failed = [msg for msg, ok in checks.items() if not ok]
         if failed:
@@ -107,6 +113,7 @@ class Surrogate:
     log_beta: jax.Array
     beta_opt_state: optax.OptState
     beta_step: Any
+    probe: HorizonProbe | None = None
     best_real_flat: jax.Array | None = None
     best_real_return: float = -np.inf
     pending_anchor: bool = False
@@ -158,6 +165,10 @@ def _build_surrogate(run: Run, cfg: SCERLConfig) -> Surrogate:
         cfg.env_name, cfg.pop_size, async_=cfg.async_env, to_jax=True
     )
     run.closers += [rl_env.close, pop_env.close]
+    probe = None
+    if cfg.probe_path is not None:
+        probe = HorizonProbe(Path(cfg.probe_path), cfg.gamma)
+        run.closers.append(probe.save)
     optimizer = optax.adam(cfg.beta_lr)
     log_beta = jnp.log(jnp.asarray(cfg.beta, dtype=jnp.float32))
     return Surrogate(
@@ -167,6 +178,7 @@ def _build_surrogate(run: Run, cfg: SCERLConfig) -> Surrogate:
         log_beta=log_beta,
         beta_opt_state=optimizer.init(log_beta),
         beta_step=make_beta_step(optimizer),
+        probe=probe,
     )
 
 
@@ -224,6 +236,7 @@ def _rollouts(
     pop_heads: ActorHead,
     real: jax.Array,
     warmup: bool,
+    recorder: StepRecorder | None = None,
 ) -> tuple[float, jax.Array]:
     online = run.td3_state.online
 
@@ -252,6 +265,7 @@ def _rollouts(
         pop_policy,
         run.buffer,
         run.horizon,
+        on_step=recorder,
         store_mask=np.asarray(real),
     )
     return float(rl_returns[0]), truth
@@ -309,6 +323,43 @@ def _surrogate_metrics(
     return to_floats(metrics)
 
 
+def _record_probe(
+    run: Run,
+    probe: HorizonProbe,
+    pop_heads: ActorHead,
+    recorder: StepRecorder,
+    *,
+    truth: jax.Array,
+    real: jax.Array,
+    replay_mu: jax.Array,
+    replay_sigma: jax.Array,
+) -> None:
+    # critic as it stood when the gate decided (before this gen's training)
+    rewards, states, done = recorder.stacked()
+    online = run.td3_state.online
+    own_mu, own_sigma = own_state_stats(
+        run.head.stats,
+        online.embedding,
+        online.critic1,
+        pop_heads,
+        states,
+        next_key(run),
+    )
+    probe.record(
+        rewards=rewards,
+        done=done,
+        own_mu=own_mu,
+        own_sigma=own_sigma,
+        truth=truth,
+        real=real,
+        replay_mu=replay_mu,
+        replay_sigma=replay_sigma,
+        undiscount_scale=run.undiscount_scale,
+        generation=run.generation,
+        env_steps=run.env_steps,
+    )
+
+
 def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
     flat_pop, _ = ask_population(run)
     flat_pop = _inject_anchor(run, sc, flat_pop)
@@ -316,7 +367,10 @@ def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
     warmup = len(run.buffer) < cfg.warmup_steps
 
     mu, sigma, decision = _score(run, sc, cfg, pop_heads, warmup)
-    rl_return, truth = _rollouts(run, sc, pop_heads, decision.real, warmup)
+    recorder = None if sc.probe is None or warmup else StepRecorder()
+    rl_return, truth = _rollouts(
+        run, sc, pop_heads, decision.real, warmup, recorder
+    )
     n_real = int(jnp.sum(decision.real))
     gen_env_steps = run.horizon * (1 + n_real)
     run.env_steps += gen_env_steps
@@ -342,6 +396,17 @@ def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
         return metrics
     if cfg.has_sigma and n_real >= 2:
         _fit_beta(run, sc, observed, decision, mu, sigma)
+    if recorder is not None and sc.probe is not None:
+        _record_probe(
+            run,
+            sc.probe,
+            pop_heads,
+            recorder,
+            truth=truth,
+            real=decision.real,
+            replay_mu=mu,
+            replay_sigma=sigma,
+        )
     metrics |= _surrogate_metrics(
         cfg, run.cem.parents, truth, mu, calibrated, decision
     )

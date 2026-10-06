@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import hydra
 import wandb
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 
@@ -17,6 +18,8 @@ from algos.sc_erl import train as train_sc_erl
 from baselines.agents import build_agent
 from baselines.envs import build_vec_env
 from baselines.wandb_logging import WandbLoggingCallback
+
+PROBE_FILE = "horizon_probe.npz"
 
 
 def _erl_kwargs(cfg: DictConfig) -> dict[str, Any]:
@@ -87,6 +90,9 @@ def _run_sc_erl(cfg: DictConfig) -> float:
         dropout_p=algo_cfg.dropout_p,
         k_ensembles=algo_cfg.k_ensembles,
         evidential_lam=algo_cfg.evidential_lam,
+        probe_path=str(Path(HydraConfig.get().runtime.output_dir) / PROBE_FILE)
+        if algo_cfg.horizon_probe
+        else None,
     )
     td3_state = train_sc_erl(sc_erl_cfg, on_generation=wandb.log)
     return evaluate_erl_actor(

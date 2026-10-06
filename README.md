@@ -97,6 +97,25 @@ critic2 is always a plain `Critic` (MSE); the TD3 target is
 just train sc_erl HalfCheetah-v5 algorithm.mode=ensemble
 ```
 
+### Horizon probe (offline, equal budget)
+
+`algorithm.horizon_probe=true` (σ-modes) writes
+`<hydra run dir>/horizon_probe.npz` per generation:
+- per-step shadow rewards, critic1 μ/σ on each individual's **own** visited
+  states, replay-batch μ/σ, truth.
+- metric only, never fed back to the algorithm.
+
+`python -m analysis.horizon_sim <npz>... [--thirds]` (from `src/`)
+replays evaluation-allocation policies at budget `b·P·H` env steps:
+- `replay_critic+random_full`: current SC-ERL (random full episodes,
+  replay critic for the rest);
+- `uniform_h`: everyone `b·H` steps + tail (`critic` / `reward`
+  extrapolation / `none`);
+- `h0=… <selector>`: everyone `h0` steps, the rest of the budget extends
+  the selected individuals to full H; selectors `random`, `cut` (closest
+  to the elite cut), `sigma_prefix`, `cv_prefix`, `sigma_at_h0`, `oracle`.
+- also AUC of each signal vs misranked-under-`h0`-estimate.
+
 ### Metrics (wandb, x-axis `env_steps`)
 
 - `perf/`: `rl_return`, `eval_rl`, `eval_elite` (deterministic, every
