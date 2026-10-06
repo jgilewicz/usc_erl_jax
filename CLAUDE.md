@@ -64,14 +64,22 @@ src/
 - `env_steps` is the x-axis for every performance claim.
 - No `tests/` suite: verify with ruff, ty and a tiny-budget smoke run
   (`total_steps=3000 algorithm.horizon=100 algorithm.pop_size=4 ...`).
-- `notes.md` (gitignored) holds measured results and refuted hypotheses —
-  §4.4 found cv/std gating ≈ random at equal cost. Check it before
-  re-proposing a gating signal.
+- `notes.md` (gitignored) holds measured results and refuted hypotheses.
+  Critic uncertainty is closed as a negative result (§4.4–4.10: gating,
+  own-state σ, σ vs Q error, MC racing, σ in the actor objective). Check
+  it before re-proposing any uncertainty signal.
 
 ## Slurm
 
 `slurm_run_array.sh` is the only slurm script: array-job-per-`(condition,
 seed)` for one `TARGET_ENV` — sac, ppo, td3, crossq, erl, sc_erl × 4 modes,
-3 σ-modes × `random_gate`, 12 × 5 = 60 tasks. `PROJECT_DIR` defaults to `SLURM_SUBMIT_DIR`. Jobs run
-`.venv/bin/python` directly — `uv sync` on the login node first; parallel
-`uv run` calls race on the shared uv cache.
+3 σ-modes × `random_gate`, 12 × 5 = 60 tasks. `PROJECT_DIR` defaults to
+`SLURM_SUBMIT_DIR`. Jobs run `.venv/bin/python` directly — `uv sync` on
+the login node first; parallel `uv run` calls race on the shared uv cache.
+
+- dog-* workers take ~0.55 GB each (pop + 1 + 2·eval processes): 32 GB at
+  pop 10, 48 GB at pop 20.
+- `dm_control.composer` forces `simplefilter("always",
+  DeprecationWarning)` on import; warning filters for dm_control must be
+  installed after `suite.load`, or slurm stderr grows by GBs.
+- `$HOME` quota on WCSS is 50 GB — slurm logs and `.venv` (~10 GB) count.

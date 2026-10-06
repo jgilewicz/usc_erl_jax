@@ -36,8 +36,7 @@ evolutionary-RL hybrid. Config: `src/conf/algorithm/erl.yaml`, impl:
   (`rl_to_ea_sync_period`).
 - **Surrogate fitness**: per-generation coin flip (`theta`) between real
   full-episode return and a cheap H-step critic-bootstrap estimate
-  (`h_step_bootstrap`, `h_steps`) — the base surrogate mechanism, no
-  uncertainty gating yet.
+  (`h_step_bootstrap`, `h_steps`).
 
 ```bash
 just train erl HalfCheetah-v5
@@ -56,7 +55,7 @@ CEM.ask() ──► pop × ActorHead   (slot 0: RL actor, 1: best-ever real, -1:
                    │
    μ_i, σ_i = E_{s~D}[critic1 stats(s, π_i(s))]   (shared replay batch, vmapped)
                    │
-   gate ── random:      real_i ~ Bernoulli(1 − omega)
+   gate ── random:      real_i ~ Bernoulli(1 − omega)   (omega 0.79)
         └─ uncertainty: real_i = cv_i > median(cv) + mad_k·MAD(cv)  or  ε-coin
                         cv_i = σ_i / (√|μ_i| + 1)
                    │
@@ -85,7 +84,8 @@ critic2 is always a plain `Critic` (MSE); the TD3 target is
   mode's critic (TD3, σ, β fit, `gate/auc` logging) but gates by `omega`.
   The mode changes TD3 itself, so a mode beating `random` does not
   credit the gate until it also beats its own `random_gate` run.
-
+- **Equal budget**: `omega` 0.79 matches the ~21% real rate the
+  uncertainty gate measured on dog-stand.
 - **Shadow rollout**: gymnasium vec envs can't step a subset, so every
   individual steps (≈ same wall-clock under async). Non-real returns go
   only to metrics; the algorithm sees `observed = where(real, truth, 0)`.
@@ -123,24 +123,43 @@ Offline analysis of the dump lives outside the repo (results in `notes.md`).
 
 ERL logs the same `perf/`, `cost/`, `train/`, `select/` groups.
 
+### Findings so far
+
+Uncertainty of the critic did not help anywhere it was tried (dog-stand,
+seed 0; details in the gitignored `notes.md`):
+- gate AUC ≈ 0.5 for all three σ-modes, also on each individual's own
+  states; uncertainty gate = `random_gate` in performance;
+- σ does not track the critic's Q error even per state;
+- gains of `ensemble` / `evidential` over `random` come from the critic
+  in TD3, not from the gate;
+- MC-dropout critics diverge around 640–700k steps.
+
 ## Tooling
 
 - `justfile`: `install`, `lint`/`lint-check`, `types`, `check`, `train`,
   `train-all`.
 - `slurm_run_array.sh`: the only slurm script; one `(condition, seed)`
-  per task — sac, ppo, td3, crossq, erl, sc_erl × 4 modes, 3 σ-modes
-  with `random_gate`; 12 × 5 = 60 tasks. Run `sbatch` from the checkout (or set `PROJECT_DIR`); runs `.venv/bin/python` directly, so
-  `uv sync` on the login node first. `EXTRA="..."` appends Hydra
-  overrides to every task in the array (keys must exist in that config).
+  per task — sac, ppo, td3, crossq, erl, `sc_erl-random`, 3 σ-modes with
+  the uncertainty gate, 3 with `random_gate`; 12 × 5 = 60 tasks. Run
+  `sbatch` from the checkout (or set `PROJECT_DIR`); it runs
+  `.venv/bin/python` directly, so `uv sync` on the login node first.
+  `EXTRA="..."` appends Hydra overrides to every task in the array (keys
+  must exist in that config, so not with the SBX baselines).
 
 ## Full experiment suite on slurm
 
+14 envs × 60 tasks = 840 runs (thesis matrix, tag `thesis-v1`):
+
 ```bash
-export WANDB_API_KEY=... PROJECT_DIR=/path/to/usc_erl_jax
-for env in HalfCheetah-v5 Hopper-v5 Walker2d-v5 Ant-v5 Swimmer-v5 \
-           dog-stand dog-walk dog-trot dog-run \
-           myoElbowPose1D6MRandom-v0 myoHandReachRandom-v0 \
-           myoHandPenTwirlRandom-v0 myoHandObjHoldRandom-v0 myoLegWalk-v0; do
-  TARGET_ENV="$env" sbatch --array=0-44 slurm_run_array.sh
-done
+export WANDB_API_KEY=...
+submit() { TARGET_ENV="$1" TAG=thesis-v1 sbatch --array=0-59%20 \
+  --cpus-per-task="$2" --mem="$3" slurm_run_array.sh; }
+for e in HalfCheetah-v5 Hopper-v5 Walker2d-v5 Ant-v5 Swimmer-v5; do
+  submit "$e" 8 16gb; done
+for e in dog-stand dog-walk dog-trot dog-run; do submit "$e" 16 32gb; done
+for e in myoElbowPose1D6MRandom-v0 myoHandReachRandom-v0 \
+         myoHandPenTwirlRandom-v0 myoHandObjHoldRandom-v0 myoLegWalk-v0; do
+  submit "$e" 8 24gb; done
 ```
+
+dog-* needs the memory: ~0.55 GB per env worker, pop + 1 + 2·eval workers.
