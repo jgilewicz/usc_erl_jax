@@ -81,9 +81,6 @@ CEM.ask() ──► pop × ActorHead   (slot 0: RL actor, 1: best-ever real, -1:
 critic2 is always a plain `Critic` (MSE); the TD3 target is
 `min(point(critic1), critic2)`, the actor follows `point(critic1)`.
 
-- **Uncertainty in the actor**: `algorithm.actor_beta` makes the TD3 actor
-  maximise `μ − actor_beta·σ` of critic1 (> 0 pessimistic, < 0
-  optimistic; σ-modes only).
 - **Critic-vs-gate ablation**: `algorithm.random_gate=true` keeps the
   mode's critic (TD3, σ, β fit, `gate/auc` logging) but gates by `omega`.
   The mode changes TD3 itself, so a mode beating `random` does not

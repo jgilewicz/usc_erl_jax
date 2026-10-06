@@ -12,8 +12,7 @@
 # Optional: TOTAL_STEPS (default 1_000_000), TAG (extra wandb tag),
 # EXTRA (space-separated Hydra overrides appended to every task, e.g.
 # EXTRA="algorithm.pop_size=20" - only valid for conditions whose config
-# has those keys), SUFFIX (appended to the condition name, so an EXTRA
-# variant gets its own wandb run name and outputs dir, e.g. SUFFIX=-ab2).
+# has those keys).
 #
 # n_envs (SBX baselines' vec-env count) follows SLURM_CPUS_PER_TASK. ERL
 # runs pop_size+1 env workers, SC-ERL pop_size+1 plus 2*eval.episodes for
@@ -49,10 +48,9 @@ CONDITIONS=(
   "sc_erl-dropout|algorithm=sc_erl algorithm.mode=dropout"
   "sc_erl-ensemble|algorithm=sc_erl algorithm.mode=ensemble"
   "sc_erl-evidential|algorithm=sc_erl algorithm.mode=evidential"
-  # omega=0.79 matches the ~21% real rate the uncertainty gate measured
-  "sc_erl-dropout-rgate|algorithm=sc_erl algorithm.mode=dropout algorithm.random_gate=true algorithm.omega=0.79"
-  "sc_erl-ensemble-rgate|algorithm=sc_erl algorithm.mode=ensemble algorithm.random_gate=true algorithm.omega=0.79"
-  "sc_erl-evidential-rgate|algorithm=sc_erl algorithm.mode=evidential algorithm.random_gate=true algorithm.omega=0.79"
+  "sc_erl-dropout-rgate|algorithm=sc_erl algorithm.mode=dropout algorithm.random_gate=true"
+  "sc_erl-ensemble-rgate|algorithm=sc_erl algorithm.mode=ensemble algorithm.random_gate=true"
+  "sc_erl-evidential-rgate|algorithm=sc_erl algorithm.mode=evidential algorithm.random_gate=true"
 )
 SEEDS=(0 1 2 3 4)
 N_SEEDS=${#SEEDS[@]}
@@ -60,7 +58,7 @@ N_SEEDS=${#SEEDS[@]}
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
 CONDITION="${CONDITIONS[$((TASK_ID / N_SEEDS))]}"
 SEED="${SEEDS[$((TASK_ID % N_SEEDS))]}"
-NAME="${CONDITION%%|*}${SUFFIX:-}"
+NAME="${CONDITION%%|*}"
 read -r -a OVERRIDES <<<"${CONDITION#*|} ${EXTRA:-}"
 ENV_SLUG="${ENV//\//_}"
 RUN_NAME="${NAME}_${ENV_SLUG}_s${SEED}"

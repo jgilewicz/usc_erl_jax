@@ -11,9 +11,9 @@ name: sc_erl
 mode: random
 # ablation: keep the mode's critic (TD3 + sigma) but gate at random by omega
 random_gate: false
-# random mode: P(surrogate) per individual; 0.75 matches the ~25% real
-# rate of the MAD+epsilon gate (equal-budget control)
-omega: 0.75
+# random gate: P(surrogate) per individual; 0.79 matches the ~21% real
+# rate the MAD+epsilon gate measured on dog-stand (equal-budget control)
+omega: 0.79
 # uncertainty modes: real rollout if cv > median(cv) + mad_k * MAD(cv),
 # or with probability epsilon regardless
 epsilon: 0.142
@@ -27,9 +27,6 @@ mc_samples: 25
 dropout_p: 0.1
 k_ensembles: 5
 evidential_lam: 0.1
-# TD3 actor maximises mu - actor_beta * sigma: > 0 pessimistic (avoid
-# uncertain actions), < 0 optimistic (seek them), 0 = point estimate
-actor_beta: 0.0
 # dump per-step shadow rewards + critic stats on each individual's own
 # states to <hydra run dir>/horizon_probe.npz (metric only; costs compute)
 horizon_probe: false

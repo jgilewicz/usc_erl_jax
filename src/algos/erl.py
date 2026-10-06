@@ -131,7 +131,6 @@ def env_dims(env_name: str, horizon: int | None) -> tuple[int, int, float, int]:
 def build_run(
     cfg: ERLConfig,
     make_critic_head: Callable[[int, int], CriticHead],
-    actor_beta: float = 0.0,
 ) -> Run:
     obs_dim, action_dim, action_limit, horizon = env_dims(
         cfg.env_name, cfg.horizon
@@ -173,7 +172,6 @@ def build_run(
         action_limit=action_limit,
         policy_freq=cfg.policy_freq,
         batch_size=cfg.batch_size,
-        actor_beta=actor_beta,
     )
     eval_env = environments.make_vec_env(
         cfg.eval_env_name or cfg.env_name,

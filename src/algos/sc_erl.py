@@ -57,7 +57,7 @@ class SCERLConfig(ERLConfig):
     # ablation: keep the mode's critic but gate at random (omega)
     random_gate: bool = False
     # P(surrogate) per individual under the random gate
-    omega: float = 0.75
+    omega: float = 0.79
     # P(forced real rollout) per individual on top of the cv gate
     epsilon: float = 0.142
     # gate threshold = median(cv) + mad_k * MAD(cv)
@@ -71,8 +71,6 @@ class SCERLConfig(ERLConfig):
     dropout_p: float = 0.1
     k_ensembles: int = 5
     evidential_lam: float = 0.1
-    # TD3 actor objective mu - actor_beta * sigma (critic1, sigma modes)
-    actor_beta: float = 0.0
     # dump per-step shadow rewards + own-state critic stats (metric only)
     probe_path: str | None = None
 
@@ -92,8 +90,6 @@ class SCERLConfig(ERLConfig):
             "k_ensembles must be >= 2": self.mode != "ensemble"
             or self.k_ensembles >= 2,
             "probe_path needs a mode with sigma": self.probe_path is None
-            or self.mode != "random",
-            "actor_beta needs a mode with sigma": self.actor_beta == 0.0
             or self.mode != "random",
         }
         failed = [msg for msg, ok in checks.items() if not ok]
@@ -425,7 +421,7 @@ def train(
     *,
     on_generation: Callable[[Metrics], None] | None = None,
 ) -> TD3State:
-    run = build_run(cfg, _head_factory(cfg), cfg.actor_beta)
+    run = build_run(cfg, _head_factory(cfg))
     try:
         sc = _build_surrogate(run, cfg)
         while run.env_steps < cfg.step_budget:
