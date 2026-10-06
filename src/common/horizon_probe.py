@@ -78,4 +78,8 @@ class HorizonProbe:
         if not self.rows:
             return
         arrays: dict[str, Any] = {k: np.stack(v) for k, v in self.rows.items()}
-        np.savez_compressed(self.path, gamma=np.asarray(self.gamma), **arrays)
+        # write-then-rename: a failed write (e.g. disk quota) must not
+        # truncate the previous checkpoint
+        tmp = self.path.with_suffix(".tmp.npz")
+        np.savez_compressed(tmp, gamma=np.asarray(self.gamma), **arrays)
+        tmp.replace(self.path)
