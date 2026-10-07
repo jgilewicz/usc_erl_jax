@@ -53,9 +53,7 @@ def selection_metrics(
     return {
         "select/elite_overlap": elite_overlap(used, truth, parents),
         "select/elite_overlap_surr": elite_overlap(surrogate, truth, parents),
-        "select/rank_corr": spearman(used, truth),
         "select/rank_corr_surr": spearman(surrogate, truth),
-        "select/regret": jnp.max(truth) - truth[jnp.argmax(used)],
     }
 
 
@@ -70,29 +68,18 @@ def gate_metrics(
     # not contain the signal it scores) puts it on the wrong side of the
     # elite cut; the gate's job is to send exactly those to a real rollout
     misranked = elite_mask(predicted, parents) != elite_mask(truth, parents)
-    hits = jnp.sum(real & misranked)
     return {
         "gate/misranked_frac": jnp.mean(misranked),
-        "gate/precision": _ratio(hits, jnp.sum(real)),
-        "gate/recall": _ratio(hits, jnp.sum(misranked)),
+        "gate/precision": _ratio(jnp.sum(real & misranked), jnp.sum(real)),
     }
 
 
 @partial(jax.jit, static_argnames=("parents",))
-def uncertainty_gate_metrics(
+def uncertainty_auc(
     truth: jax.Array,
     predicted: jax.Array,
     cv: jax.Array,
-    real: jax.Array,
-    deterministic: jax.Array,
-    threshold: jax.Array,
     parents: int,
 ) -> dict[str, jax.Array]:
     misranked = elite_mask(predicted, parents) != elite_mask(truth, parents)
-    return {
-        "gate/auc": auc(cv, misranked),
-        "gate/threshold": threshold,
-        "gate/cv_mean": jnp.mean(cv),
-        "gate/cv_max": jnp.max(cv),
-        "gate/eps_frac": jnp.mean(real & ~deterministic),
-    }
+    return {"gate/auc": auc(cv, misranked)}

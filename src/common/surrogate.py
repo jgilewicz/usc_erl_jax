@@ -14,10 +14,7 @@ from modules.deep_modules import ActorHead, SharedStateEmbedding
 
 class Gate(NamedTuple):
     real: jax.Array
-    # cv > threshold, before the epsilon coin (all False in random mode)
-    deterministic: jax.Array
     cv: jax.Array
-    threshold: jax.Array
 
 
 class Calibrated(NamedTuple):
@@ -65,12 +62,10 @@ def gate(
     )
     if not uses_uncertainty:
         # omega = P(surrogate) per individual
-        none = jnp.zeros(mu.shape, dtype=bool)
-        return Gate(coin > omega, none, cv, jnp.asarray(jnp.nan))
+        return Gate(coin > omega, cv)
     median = jnp.median(cv)
     threshold = median + mad_k * jnp.median(jnp.abs(cv - median))
-    deterministic = cv > threshold
-    return Gate(deterministic | (coin < epsilon), deterministic, cv, threshold)
+    return Gate((cv > threshold) | (coin < epsilon), cv)
 
 
 def _lcb(

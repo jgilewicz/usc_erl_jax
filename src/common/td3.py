@@ -41,10 +41,10 @@ class TD3Config(NamedTuple):
 
 Batch = dict[str, jnp.ndarray]
 # (state, buffer data, buffer size, num_updates, key)
-#   -> (state, mean critic loss, mean actor loss)
+#   -> (state, mean critic loss)
 TrainFn = Callable[
     [TD3State, BufferData, jax.Array, jax.Array, jax.Array],
-    tuple[TD3State, jax.Array, jax.Array],
+    tuple[TD3State, jax.Array],
 ]
 
 
@@ -151,7 +151,7 @@ def _actor_update(
     state: TD3State,
     batch: Batch,
     key: jax.Array,
-) -> tuple[TD3State, jax.Array]:
+) -> TD3State:
     def loss_fn(
         embedding_actor: tuple[SharedStateEmbedding, ActorHead],
     ) -> jax.Array:
@@ -161,7 +161,7 @@ def _actor_update(
         return -jnp.mean(q)
 
     embedding_actor = (state.online.embedding, state.online.actor)
-    loss, grads = eqx.filter_value_and_grad(loss_fn)(embedding_actor)
+    grads = eqx.filter_grad(loss_fn)(embedding_actor)
     updates, opt_state = optimizer.update(
         grads,
         state.actor_opt_state,
@@ -175,10 +175,9 @@ def _actor_update(
         actor=genetic_soft_update(state.target.actor, actor, cfg.tau),
     )
     new_online = state.online._replace(embedding=embedding, actor=actor)
-    new_state = state._replace(
+    return state._replace(
         online=new_online, target=new_target, actor_opt_state=opt_state
     )
-    return new_state, loss
 
 
 def make_td3_train(
@@ -194,13 +193,13 @@ def make_td3_train(
         size: jax.Array,
         num_updates: jax.Array,
         key: jax.Array,
-    ) -> tuple[TD3State, jax.Array, jax.Array]:
+    ) -> tuple[TD3State, jax.Array]:
         dynamic, static = eqx.partition(state, eqx.is_array)
 
         def body(
-            step: jax.Array, carry: tuple[Any, jax.Array, jax.Array, jax.Array]
-        ) -> tuple[Any, jax.Array, jax.Array, jax.Array]:
-            dynamic, key, critic_sum, actor_sum = carry
+            step: jax.Array, carry: tuple[Any, jax.Array, jax.Array]
+        ) -> tuple[Any, jax.Array, jax.Array]:
+            dynamic, key, critic_sum = carry
             key, sample_key, critic_key, actor_key = jax.random.split(key, 4)
             batch = sample_batch(data, size, sample_key, cfg.batch_size)
             state, critic_loss = _critic_update(
@@ -212,8 +211,8 @@ def make_td3_train(
                 critic_key,
             )
 
-            def with_actor(dyn: Any) -> tuple[Any, jax.Array]:
-                new_state, loss = _actor_update(
+            def with_actor(dyn: Any) -> Any:
+                new_state = _actor_update(
                     cfg,
                     head,
                     actor_optimizer,
@@ -221,35 +220,25 @@ def make_td3_train(
                     batch,
                     actor_key,
                 )
-                return eqx.filter(new_state, eqx.is_array), loss
+                return eqx.filter(new_state, eqx.is_array)
 
-            def skip(dyn: Any) -> tuple[Any, jax.Array]:
-                return dyn, jnp.zeros(())
+            def skip(dyn: Any) -> Any:
+                return dyn
 
-            dynamic, actor_loss = jax.lax.cond(
+            dynamic = jax.lax.cond(
                 step % cfg.policy_freq == 0,
                 with_actor,
                 skip,
                 eqx.filter(state, eqx.is_array),
             )
-            return (
-                dynamic,
-                key,
-                critic_sum + critic_loss,
-                actor_sum + actor_loss,
-            )
+            return dynamic, key, critic_sum + critic_loss
 
-        dynamic, _, critic_sum, actor_sum = jax.lax.fori_loop(
-            0,
-            num_updates,
-            body,
-            (dynamic, key, jnp.zeros(()), jnp.zeros(())),
+        dynamic, _, critic_sum = jax.lax.fori_loop(
+            0, num_updates, body, (dynamic, key, jnp.zeros(()))
         )
-        actor_steps = (num_updates + cfg.policy_freq - 1) // cfg.policy_freq
         return (
             eqx.combine(dynamic, static),
             critic_sum / jnp.maximum(num_updates, 1),
-            actor_sum / jnp.maximum(actor_steps, 1),
         )
 
     return train

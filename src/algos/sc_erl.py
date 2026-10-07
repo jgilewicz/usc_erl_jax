@@ -27,11 +27,7 @@ from algos.erl import (
 )
 from common.critic_heads import MODES, CriticHead, make_head
 from common.horizon_probe import HorizonProbe, StepRecorder, own_state_stats
-from common.metrics import (
-    gate_metrics,
-    selection_metrics,
-    uncertainty_gate_metrics,
-)
+from common.metrics import gate_metrics, selection_metrics, uncertainty_auc
 from common.rollout import collect_parallel_episode, heads_policy
 from common.surrogate import (
     Calibrated,
@@ -204,11 +200,7 @@ def _score(
     zeros = jnp.zeros(cfg.pop_size)
     if warmup:
         everyone = jnp.ones(cfg.pop_size, dtype=bool)
-        return (
-            zeros,
-            zeros,
-            Gate(everyone, everyone, zeros, jnp.asarray(jnp.nan)),
-        )
+        return zeros, zeros, Gate(everyone, zeros)
     states = run.buffer.sample(next_key(run), cfg.surrogate_batch)["state"]
     mu, sigma = population_stats(
         sc.stats,
@@ -237,7 +229,7 @@ def _rollouts(
     real: jax.Array,
     warmup: bool,
     recorder: StepRecorder | None = None,
-) -> tuple[float, jax.Array]:
+) -> jax.Array:
     online = run.td3_state.online
 
     def rl_policy(act_key: jax.Array, states: jnp.ndarray) -> jnp.ndarray:
@@ -254,7 +246,7 @@ def _rollouts(
     def pop_policy(act_key: jax.Array, states: jnp.ndarray) -> jnp.ndarray:
         return heads_policy(online.embedding, pop_heads, states)
 
-    rl_returns, _ = collect_parallel_episode(
+    collect_parallel_episode(
         sc.rl_env, next_key(run), rl_policy, run.buffer, run.horizon
     )
     # shadow rollout: every individual steps (same wall-clock under async),
@@ -268,7 +260,7 @@ def _rollouts(
         on_step=recorder,
         store_mask=np.asarray(real),
     )
-    return float(rl_returns[0]), truth
+    return truth
 
 
 def _update_anchor(
@@ -311,15 +303,7 @@ def _surrogate_metrics(
         truth, calibrated.fitness, calibrated.surrogate, parents
     ) | gate_metrics(truth, mu, decision.real, parents)
     if cfg.has_sigma:
-        metrics |= uncertainty_gate_metrics(
-            truth,
-            mu,
-            decision.cv,
-            decision.real,
-            decision.deterministic,
-            decision.threshold,
-            parents,
-        )
+        metrics |= uncertainty_auc(truth, mu, decision.cv, parents)
     return to_floats(metrics)
 
 
@@ -368,9 +352,7 @@ def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
 
     mu, sigma, decision = _score(run, sc, cfg, pop_heads, warmup)
     recorder = None if sc.probe is None or warmup else StepRecorder()
-    rl_return, truth = _rollouts(
-        run, sc, pop_heads, decision.real, warmup, recorder
-    )
+    truth = _rollouts(run, sc, pop_heads, decision.real, warmup, recorder)
     n_real = int(jnp.sum(decision.real))
     gen_env_steps = run.horizon * (1 + n_real)
     run.env_steps += gen_env_steps
@@ -385,12 +367,7 @@ def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
     sc.pending_anchor = n_real > 0
 
     metrics: Metrics = {
-        "perf/rl_return": rl_return,
-        "perf/pop_true_best": float(jnp.max(truth)),
-        "perf/pop_true_mean": float(jnp.mean(truth)),
-        "cost/env_steps_gen": float(gen_env_steps),
         "cost/real_frac": n_real / cfg.pop_size,
-        "train/buffer_size": float(len(run.buffer)),
     }
     if warmup:
         return metrics
@@ -434,7 +411,7 @@ def train(
             print_generation(
                 run,
                 metrics,
-                f"{cfg.mode} real={metrics['cost/real_frac']:.1f}",
+                cfg.mode + ("-rgate" if cfg.random_gate else ""),
             )
             if on_generation is not None:
                 on_generation(metrics)

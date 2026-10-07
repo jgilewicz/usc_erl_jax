@@ -53,6 +53,10 @@ src/
 - TD3 updates run as one `eqx.filter_jit` `lax.fori_loop`
   (`make_td3_train`); pass `num_updates` as a `jnp` array or every new
   count recompiles. `num_updates` scales with collected env steps.
+- Metric set is deliberately small (README table): `perf/eval_*`,
+  `cost/real_frac`, `select/elite_overlap{,_surr}`, `select/rank_corr_surr`,
+  `gate/{misranked_frac,precision,auc}`, `train/critic_loss`. Add a metric
+  only with a thesis question it answers.
 - Surrogate quality = `select/elite_overlap*`; gate quality = `gate/*`
   with "misranked" = wrong side of the elite cut under μ alone (never
   under the LCB: σ would sit in both label and score). Chance elite overlap is

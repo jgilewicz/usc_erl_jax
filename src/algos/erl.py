@@ -218,7 +218,7 @@ def train_and_merge(run: Run, gen_env_steps: int) -> Metrics:
     # scales with steps actually collected: a fixed count inflates the
     # replay ratio on cheap generations
     num_updates = int(run.cfg.train_ratio * gen_env_steps)
-    td3_state, critic_loss, actor_loss = run.train_td3(
+    td3_state, critic_loss = run.train_td3(
         run.td3_state,
         run.buffer.data,
         jnp.asarray(len(run.buffer)),
@@ -234,8 +234,6 @@ def train_and_merge(run: Run, gen_env_steps: int) -> Metrics:
     )
     return {
         "train/critic_loss": float(critic_loss),
-        "train/actor_loss": float(actor_loss),
-        "train/critic_updates": float(num_updates),
     }
 
 
@@ -270,9 +268,10 @@ def print_generation(run: Run, metrics: Metrics, tag: str) -> None:
 
     print(
         f"gen {run.generation:4d} | steps {run.env_steps:9d} | {tag} | "
-        f"true best={show('perf/pop_true_best')} | "
+        f"real={show('cost/real_frac', '.2f')} | "
         f"elite_ovl={show('select/elite_overlap', '.2f')} | "
-        f"rl={show('perf/rl_return')} eval_rl={show('perf/eval_rl')} | "
+        f"eval_rl={show('perf/eval_rl')} "
+        f"eval_elite={show('perf/eval_elite')} | "
         f"critic_loss={show('train/critic_loss', '.4f')}"
     )
 
@@ -339,7 +338,7 @@ def _rollout(
     vec_env: gym.vector.VectorEnv,
     pop_heads: ActorHead,
     warmup: bool,
-) -> tuple[jax.Array, float, jax.Array]:
+) -> tuple[jax.Array, jax.Array]:
     cfg = run.cfg
     embedding = run.td3_state.online.embedding
     actor = run.td3_state.online.actor
@@ -394,7 +393,7 @@ def _rollout(
         cfg.gamma,
         run.undiscount_scale,
     )
-    return returns[:-1], float(returns[-1]), surrogate
+    return returns[:-1], surrogate
 
 
 def _generation(run: Run, vec_env: gym.vector.VectorEnv) -> Metrics:
@@ -405,18 +404,13 @@ def _generation(run: Run, vec_env: gym.vector.VectorEnv) -> Metrics:
     flat_pop, pop_heads = ask_population(run)
     warmup = len(run.buffer) < cfg.warmup_steps
 
-    truth, rl_return, surrogate = _rollout(run, vec_env, pop_heads, warmup)
+    truth, surrogate = _rollout(run, vec_env, pop_heads, warmup)
     use_real = warmup or bool(jax.random.bernoulli(next_key(run), cfg.theta))
     fitness = truth if use_real else surrogate
     run.cem.tell(fitness, flat_pop)
 
     metrics: Metrics = {
-        "perf/rl_return": rl_return,
-        "perf/pop_true_best": float(jnp.max(truth)),
-        "perf/pop_true_mean": float(jnp.mean(truth)),
-        "cost/env_steps_gen": float(gen_env_steps),
         "cost/real_frac": float(use_real),
-        "train/buffer_size": float(len(run.buffer)),
     }
     if not warmup:
         metrics |= to_floats(

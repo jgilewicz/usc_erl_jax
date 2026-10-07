@@ -109,19 +109,26 @@ Offline analysis of the dump lives outside the repo (results in `notes.md`).
 
 ### Metrics (wandb, x-axis `env_steps`)
 
-- `perf/`: `rl_return`, `eval_rl`, `eval_elite` (deterministic, every
-  `eval.interval` env steps, off-budget), `pop_true_best/mean`.
-- `cost/`: `env_steps_gen`, `real_frac`.
-- `train/`: `critic_loss`, `actor_loss`, `critic_updates`, `buffer_size`.
-- `select/`: `elite_overlap`, `rank_corr` (fitness CEM saw vs truth),
-  `*_surr` (calibrated surrogate on everyone vs truth), `regret`.
-- `gate/`: misranked = wrong side of the elite cut under the critic's μ
-  (σ left out so the label does not contain what `cv` scores);
-  `misranked_frac`, `precision`, `recall`; modes with σ add `auc`
-  (cv → misranked), `cv_mean/max`, and under the uncertainty gate
-  `threshold`, `eps_frac`.
+Ground truth = the undiscounted return of one full episode per individual
+(shadow rollout in SC-ERL, so it exists for every individual). Elite =
+top `parents = pop_size // 2` by score; chance elite overlap = 0.5.
 
-ERL logs the same `perf/`, `cost/`, `train/`, `select/` groups.
+| metric | measures | function | truth |
+| --- | --- | --- | --- |
+| `perf/eval_rl` | policy quality, RL actor | mean deterministic return, `eval.episodes` episodes every `eval.interval` steps, off-budget | – |
+| `perf/eval_elite` | policy quality, CEM elite | same, for the CEM elite head | – |
+| `cost/real_frac` | evaluation cost | real rollouts / `pop_size` (ERL: 1 or 0 per gen) | – |
+| `select/elite_overlap` | selection quality | share of the elite under the fitness CEM saw that is also truth-elite | per-individual true return |
+| `select/elite_overlap_surr` | surrogate quality | same, for the calibrated surrogate on everyone (ERL: h-step bootstrap) | per-individual true return |
+| `select/rank_corr_surr` | surrogate quality, whole ranking | Spearman(surrogate, truth), average ranks | per-individual true return |
+| `gate/misranked_frac` | base rate | share of individuals μ puts on the wrong side of the elite cut | truth elite membership |
+| `gate/precision` | gate quality | share of gated-real individuals that were misranked; vs `misranked_frac` = lift over random | misranked label |
+| `gate/auc` | σ as a signal (σ-modes, under either gate) | P(cv of a misranked > cv of a correct one), ties ½ | misranked label |
+| `train/critic_loss` | critic health (divergence) | mean TD loss over the generation's updates | – |
+
+SC-ERL logs all; ERL logs `perf/`, `cost/`, `select/`, `train/`; SBX
+baselines log `eval_reward`, `total_steps`, `critic_loss`. `select/` and
+`gate/` start after warmup.
 
 ### Findings so far
 
