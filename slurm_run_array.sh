@@ -10,6 +10,7 @@
 # (condition 7): sbatch --array=35-39 slurm_run_array.sh
 #
 # Optional: TOTAL_STEPS (default 1_000_000), TAG (extra wandb tag),
+# WANDB_MODE (default online; offline syncs after the run ends),
 # EXTRA (space-separated Hydra overrides appended to every task, e.g.
 # EXTRA="algorithm.pop_size=20" - only valid for conditions whose config
 # has those keys).
@@ -75,7 +76,8 @@ VENV="${PROJECT_DIR}/.venv/bin"
 }
 
 : "${WANDB_API_KEY:?export WANDB_API_KEY before submitting}"
-export WANDB_MODE=offline
+# online: runs are supervised live from wandb (compute nodes have internet)
+export WANDB_MODE="${WANDB_MODE:-online}"
 # per-run dir: a shared one makes every task re-sync every other task's run
 export WANDB_DIR="${PROJECT_DIR}/wandb_logs/${RUN_NAME}"
 mkdir -p logs "${WANDB_DIR}"
@@ -91,9 +93,11 @@ if "${VENV}/python" -m train \
   "wandb.name=${RUN_NAME}" \
   "wandb.tags=[${TAG},${NAME},${ENV_SLUG}]" \
   hydra.run.dir="outputs/${RUN_NAME}"; then
-  for d in "${WANDB_DIR}"/wandb/offline-run-*; do
-    [[ -d "$d" ]] && "${VENV}/wandb" sync "$d"
-  done
+  if [[ "${WANDB_MODE}" == offline ]]; then
+    for d in "${WANDB_DIR}"/wandb/offline-run-*; do
+      [[ -d "$d" ]] && "${VENV}/wandb" sync "$d"
+    done
+  fi
 else
   echo "ERROR: ${RUN_NAME} failed" >&2
   exit 1

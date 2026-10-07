@@ -1,0 +1,121 @@
+name = "thesis-v1"
+question = "Does a critic-uncertainty gate select better individuals than a random gate at equal cost, and does SC-ERL beat ERL?"
+
+envs = [
+  "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5", "Ant-v5", "Swimmer-v5",
+  "dog-stand", "dog-walk", "dog-trot", "dog-run",
+  "myoElbowPose1D6MRandom-v0", "myoHandReachRandom-v0",
+  "myoHandPenTwirlRandom-v0", "myoHandObjHoldRandom-v0", "myoLegWalk-v0",
+]
+# first 8 get colour in "All conditions" plots
+conditions = [
+  "erl", "sc_erl-random",
+  "sc_erl-dropout", "sc_erl-ensemble", "sc_erl-evidential",
+  "sc_erl-dropout-rgate", "sc_erl-ensemble-rgate", "sc_erl-evidential-rgate",
+  "sac", "ppo", "td3", "crossq",
+]
+seeds = [0, 1, 2, 3, 4]
+total_steps = 1_000_000
+
+[wandb]
+entity = "evo_rl"
+project = "triage_erl"
+tag = "thesis-v1"
+run_name = '^(?P<condition>.+)_(?P<env>[^_]+)_s(?P<seed>\d+)$'
+
+[metric]
+keys = ["perf/eval_rl", "eval_reward"]
+x = ["env_steps", "total_steps"]
+label = "eval return"
+final_window = 0.1
+
+[reference]
+condition = "erl"
+thresholds = [0.25, 0.5, 0.75, 0.9]
+
+[[comparisons]]
+a = "sc_erl-dropout"
+b = "sc_erl-dropout-rgate"
+question = "Uncertainty gate vs random gate, dropout critic"
+
+[[comparisons]]
+a = "sc_erl-ensemble"
+b = "sc_erl-ensemble-rgate"
+question = "Uncertainty gate vs random gate, ensemble critic"
+
+[[comparisons]]
+a = "sc_erl-evidential"
+b = "sc_erl-evidential-rgate"
+question = "Uncertainty gate vs random gate, evidential critic"
+
+[[comparisons]]
+a = "sc_erl-dropout"
+b = "sc_erl-random"
+question = "Dropout critic + gate vs plain critic + random gate"
+
+[[comparisons]]
+a = "sc_erl-ensemble"
+b = "sc_erl-random"
+question = "Ensemble critic + gate vs plain critic + random gate"
+
+[[comparisons]]
+a = "sc_erl-evidential"
+b = "sc_erl-random"
+question = "Evidential critic + gate vs plain critic + random gate"
+
+[[comparisons]]
+a = "sc_erl-random"
+b = "erl"
+question = "SC-ERL vs ERL"
+
+[[secondary]]
+key = "cost/real_frac"
+label = "real_frac"
+note = "share evaluated for real; lower = cheaper"
+
+[[secondary]]
+key = "select/elite_overlap"
+label = "elite overlap"
+note = "selection quality; chance 0.5"
+
+[[secondary]]
+key = "select/elite_overlap_surr"
+label = "elite overlap, surrogate"
+note = "surrogate quality; chance 0.5"
+
+[[secondary]]
+key = "select/rank_corr_surr"
+label = "rank corr, surrogate"
+note = "Spearman vs truth"
+
+[[secondary]]
+key = "gate/precision"
+label = "gate precision"
+note = "compare with misranked share"
+
+[[secondary]]
+key = "gate/misranked_frac"
+label = "misranked share"
+note = "base rate for precision"
+
+[[secondary]]
+key = "gate/auc"
+label = "gate AUC"
+note = "0.5 = σ carries no signal"
+
+[[secondary]]
+key = "gate/auc_cut"
+label = "cut-distance AUC"
+note = "positive control for gate AUC; > 0.5 = label is predictable"
+
+[[secondary]]
+key = "gate/sigma_err_corr"
+label = "σ vs differential error"
+note = "Spearman per generation; 0 = σ blind to ranking error"
+
+[cluster]
+ssh_host = "wcss"
+# job IDs of the running matrix: fill from `squeue -u $USER` on WCSS
+
+[report]
+url = ""

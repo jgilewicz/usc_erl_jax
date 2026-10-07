@@ -152,6 +152,11 @@ seed 0; details in the gitignored `notes.md`):
   `.venv/bin/python` directly, so `uv sync` on the login node first.
   `EXTRA="..."` appends Hydra overrides to every task in the array (keys
   must exist in that config, so not with the SBX baselines).
+  wandb logs online by default (`WANDB_MODE=offline` syncs after the run).
+- `experiments/<tag>/experiment.toml`: grid, metric, planned comparisons
+  and job IDs for the global `wcss-experiment` Claude skill (supervision
+  via `squeue`/`sacct` + wandb, HTML report). `cache/`, `report.html`,
+  `record.md` are generated and gitignored.
 
 ## Full experiment suite on slurm
 

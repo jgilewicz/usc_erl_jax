@@ -15,3 +15,8 @@ multirun/
 wandb/
 
 notes.md
+
+# wcss-experiment: generated per experiment
+experiments/*/cache/
+experiments/*/report.html
+experiments/*/record.md

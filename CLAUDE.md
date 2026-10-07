@@ -81,6 +81,11 @@ seed)` for one `TARGET_ENV` — sac, ppo, td3, crossq, erl, sc_erl × 4 modes,
 `SLURM_SUBMIT_DIR`. Jobs run `.venv/bin/python` directly — `uv sync` on
 the login node first; parallel `uv run` calls race on the shared uv cache.
 
+- Experiments are launched, supervised and reported with the global
+  `wcss-experiment` skill; its spec is
+  `experiments/<tag>/experiment.toml` (`thesis-v1` exists). Record job IDs
+  there at submission. Measured conclusions still go to `notes.md`.
+- wandb logs online in jobs; `WANDB_MODE=offline` restores sync-at-end.
 - dog-* workers take ~0.55 GB each (pop + 1 + 2·eval processes): 32 GB at
   pop 10, 48 GB at pop 20.
 - `dm_control.composer` forces `simplefilter("always",
