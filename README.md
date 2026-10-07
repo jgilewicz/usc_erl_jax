@@ -124,6 +124,8 @@ top `parents = pop_size // 2` by score; chance elite overlap = 0.5.
 | `gate/misranked_frac` | base rate | share of individuals μ puts on the wrong side of the elite cut | truth elite membership |
 | `gate/precision` | gate quality | share of gated-real individuals that were misranked; vs `misranked_frac` = lift over random | misranked label |
 | `gate/auc` | σ as a signal (σ-modes, under either gate) | P(cv of a misranked > cv of a correct one), ties ½ | misranked label |
+| `gate/auc_cut` | positive control for `gate/auc` (all SC-ERL modes) | P(μ of a misranked is closer to the elite cut than μ of a correct one) | misranked label |
+| `gate/sigma_err_corr` | does σ track the surrogate's error per individual (σ-modes) | Spearman(cv, \|differential error\|), error = scaled μ − truth minus its generation mean | per-individual true return |
 | `train/critic_loss` | critic health (divergence) | mean TD loss over the generation's updates | – |
 
 SC-ERL logs all; ERL logs `perf/`, `cost/`, `select/`, `train/`; SBX

@@ -68,9 +68,14 @@ def gate_metrics(
     # not contain the signal it scores) puts it on the wrong side of the
     # elite cut; the gate's job is to send exactly those to a real rollout
     misranked = elite_mask(predicted, parents) != elite_mask(truth, parents)
+    ranked = jnp.sort(predicted)[::-1]
+    cut = 0.5 * (ranked[parents - 1] + ranked[parents])
     return {
         "gate/misranked_frac": jnp.mean(misranked),
         "gate/precision": _ratio(jnp.sum(real & misranked), jnp.sum(real)),
+        # positive control for gate/auc: the label is predictable from
+        # sibling-relative information, so a σ AUC of 0.5 is not label noise
+        "gate/auc_cut": auc(-jnp.abs(predicted - cut), misranked),
     }
 
 
@@ -79,7 +84,15 @@ def uncertainty_auc(
     truth: jax.Array,
     predicted: jax.Array,
     cv: jax.Array,
+    scale: float,
     parents: int,
 ) -> dict[str, jax.Array]:
     misranked = elite_mask(predicted, parents) != elite_mask(truth, parents)
-    return {"gate/auc": auc(cv, misranked)}
+    # differential error: the sibling-shared part is removed by the offset
+    # and cannot change the ranking
+    error = scale * predicted - truth
+    differential = jnp.abs(error - error.mean())
+    return {
+        "gate/auc": auc(cv, misranked),
+        "gate/sigma_err_corr": spearman(cv, differential),
+    }

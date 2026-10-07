@@ -298,12 +298,14 @@ def _surrogate_metrics(
     mu: jax.Array,
     calibrated: Calibrated,
     decision: Gate,
+    *,
+    scale: float,
 ) -> Metrics:
     metrics = selection_metrics(
         truth, calibrated.fitness, calibrated.surrogate, parents
     ) | gate_metrics(truth, mu, decision.real, parents)
     if cfg.has_sigma:
-        metrics |= uncertainty_auc(truth, mu, decision.cv, parents)
+        metrics |= uncertainty_auc(truth, mu, decision.cv, scale, parents)
     return to_floats(metrics)
 
 
@@ -385,7 +387,13 @@ def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
             replay_sigma=sigma,
         )
     metrics |= _surrogate_metrics(
-        cfg, run.cem.parents, truth, mu, calibrated, decision
+        cfg,
+        run.cem.parents,
+        truth,
+        mu,
+        calibrated,
+        decision,
+        scale=run.undiscount_scale,
     )
     metrics |= train_and_merge(run, gen_env_steps)
     if run.generation % cfg.rl_to_ea_sync_period == 0 and n_real > 0:

@@ -55,8 +55,9 @@ src/
   count recompiles. `num_updates` scales with collected env steps.
 - Metric set is deliberately small (README table): `perf/eval_*`,
   `cost/real_frac`, `select/elite_overlap{,_surr}`, `select/rank_corr_surr`,
-  `gate/{misranked_frac,precision,auc}`, `train/critic_loss`. Add a metric
-  only with a thesis question it answers.
+  `gate/{misranked_frac,precision,auc,auc_cut,sigma_err_corr}`,
+  `train/critic_loss`. Add a metric only with a thesis question it
+  answers. `gate/auc_cut` is the positive control for `gate/auc`.
 - Surrogate quality = `select/elite_overlap*`; gate quality = `gate/*`
   with "misranked" = wrong side of the elite cut under μ alone (never
   under the LCB: σ would sit in both label and score). Chance elite overlap is
