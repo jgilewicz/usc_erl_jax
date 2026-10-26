@@ -13,7 +13,8 @@ Extends the global CLAUDE.md. Project-specific deltas only.
 
 ```text
 src/
-  train.py           # single Hydra entrypoint, baselines + ERL
+  train.py           # single Hydra entrypoint (thin: env workers re-import it)
+  runner.py          # run_training + dispatch, baselines + ERL
   algos/erl.py        # ERL (EvoRainbow) training loop
   algos/sc_erl.py     # SC-ERL: per-individual surrogate gate (random | dropout | ensemble | evidential)
   baselines/          # SBX agent construction, vec-env wrapping, wandb callback
@@ -29,7 +30,7 @@ src/
   classes for logic (`CEM` is state-holding, not logic-holding). PyTorch
   rule from the global file doesn't apply here.
 - New algorithm = new `src/conf/algorithm/<name>.yaml` + a `_run_<name>`
-  in `src/train.py` added to the `dispatch` map, not a new entrypoint.
+  in `src/runner.py` added to the `dispatch` map, not a new entrypoint.
 - Env registration goes through `environments.register_env` /
   `register_backend` — never `gym.register` directly in algo code.
 - ERL and SC-ERL share params and plumbing: `sc_erl.yaml` composes
@@ -88,7 +89,8 @@ the login node first; parallel `uv run` calls race on the shared uv cache.
   there at submission. Measured conclusions still go to `notes.md`.
 - wandb logs online in jobs; `WANDB_MODE=offline` restores sync-at-end.
 - dog-* workers take ~0.55 GB each (pop + 1 + 2·eval processes): 32 GB at
-  pop 10, 48 GB at pop 20.
+  pop 10, 48 GB at pop 20. That is the env itself: `train.py` stays thin so
+  spawned workers don't also import the training stack.
 - `dm_control.composer` forces `simplefilter("always",
   DeprecationWarning)` on import; warning filters for dm_control must be
   installed after `suite.load`, or slurm stderr grows by GBs.
