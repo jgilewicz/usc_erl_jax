@@ -22,11 +22,14 @@ from modules.deep_modules import ActorHead, SharedStateEmbedding
 # metric-only: own envs, own key stream, own CEM samples and own copies of
 # the heads; nothing recorded here may flow back into gate, calibration,
 # beta, CEM, anchor or the buffer
-# sets: cem = x_j, mean = x_j + ascent on mean_k Q_k, member = x_j +
-# ascent on Q_{j mod K}
-SETS = ("cem", "mean", "member")
+# per step count T: mean = x_j + T ascent steps on mean_k Q_k, member = the
+# same on Q_{j mod K}, rand = mean + a random direction of norm
+# |member - mean| (is the member gain uncertainty or just spread?)
+STEPS = (50, 200)
+SETS = ("cem",) + tuple(
+    f"{kind}{t}" for t in STEPS for kind in ("mean", "member", "rand")
+)
 CANDIDATES = 20
-GRAD_STEPS = 50
 GRAD_BATCH = 256
 _KEY_OFFSET = 40_000
 
@@ -133,9 +136,9 @@ def _diagnostics(
     sets: jax.Array,
     states: jax.Array,
 ) -> dict[str, jax.Array]:
-    # sets (3, N, D) in SETS order; states (B, obs), one replay batch
+    # sets (S, N, D) in SETS order; states (B, obs), one replay batch
     z = jax.vmap(post.embedding)(states)
-    cem, mean, member = sets
+    cem = sets[0]
 
     def pairwise_cos(flat: jax.Array) -> jax.Array:
         # mean cos between member gradients at the CEM sample: if ~1, the
@@ -147,31 +150,21 @@ def _diagnostics(
         gram = unit @ unit.T
         return (gram.sum() - jnp.trace(gram)) / (post.k * (post.k - 1))
 
-    def actions(flat: jax.Array) -> jax.Array:
-        return jax.vmap(unravel(flat))(z)
-
-    def action_dist(a: jax.Array, b: jax.Array) -> jax.Array:
-        return jnp.linalg.norm(actions(a) - actions(b), axis=-1).mean()
-
     q_mean = jax.vmap(
         jax.vmap(lambda f: _member_values(post, unravel, f, states, z).mean())
     )(sets)
+    # per T: sets[1 + 3i] = mean, sets[2 + 3i] = member
+    delta_cos = jnp.stack(
+        [
+            jax.vmap(_cosine)(sets[2 + 3 * i] - cem, sets[1 + 3 * i] - cem)
+            for i in range(len(STEPS))
+        ]
+    )
     return {
         "q_mean": q_mean,
         "grad_cos": jax.vmap(pairwise_cos)(cem),
-        "delta_cos": jax.vmap(_cosine)(member - cem, mean - cem),
-        "step_norm": jnp.stack(
-            [
-                jnp.linalg.norm(mean - cem, axis=1),
-                jnp.linalg.norm(member - cem, axis=1),
-            ]
-        ),
-        "action_dist": jnp.stack(
-            [
-                jax.vmap(action_dist)(member, mean),
-                jax.vmap(action_dist)(mean, cem),
-            ]
-        ),
+        "delta_cos": delta_cos,
+        "step_norm": jnp.linalg.norm(sets[1:] - cem, axis=-1),
     }
 
 
@@ -198,6 +191,27 @@ def _weights(k: int) -> jax.Array:
     return jnp.stack([uniform, one_hot])
 
 
+def _offspring(
+    probe: VariationProbe,
+    post: Posterior,
+    unravel: Callable[[jax.Array], ActorHead],
+    cem: jax.Array,
+    states: jax.Array,
+    direction: jax.Array,
+) -> list[jax.Array]:
+    # mean, member, rand per T; the T-step sets reuse the first T batches
+    mean_w, member_w = _weights(post.k)
+    sets = []
+    for t in STEPS:
+        mean = _ascend(post, unravel, probe.optimizer, cem, mean_w, states[:t])
+        member = _ascend(
+            post, unravel, probe.optimizer, cem, member_w, states[:t]
+        )
+        radius = jnp.linalg.norm(member - mean, axis=1, keepdims=True)
+        sets += [mean, member, mean + radius * direction]
+    return sets
+
+
 def record_variation(
     probe: VariationProbe,
     pop: Population,
@@ -211,20 +225,15 @@ def record_variation(
     # paired design: candidate j of every set starts from the same CEM
     # sample x_j and plays both episodes from the same start states, so
     # differences between sets are differences in variation only
-    keys = jax.random.split(jax.random.fold_in(probe.key, generation), 5)
+    keys = jax.random.split(jax.random.fold_in(probe.key, generation), 6)
     noise = jax.random.normal(keys[0], (CANDIDATES, pop.mean.shape[0]))
     cem = pop.mean + pop.scale * noise * jnp.sqrt(pop.cov)
-    states = buffer.sample(keys[1], GRAD_STEPS * GRAD_BATCH)["state"]
-    states = states.reshape(GRAD_STEPS, GRAD_BATCH, -1)
-    weights = _weights(post.k)
+    states = buffer.sample(keys[1], max(STEPS) * GRAD_BATCH)["state"]
+    states = states.reshape(max(STEPS), GRAD_BATCH, -1)
+    direction = jax.random.normal(keys[5], cem.shape)
+    direction /= jnp.linalg.norm(direction, axis=1, keepdims=True)
     sets = jnp.stack(
-        [
-            cem,
-            *(
-                _ascend(post, pop.unravel, probe.optimizer, cem, w, states)
-                for w in weights
-            ),
-        ]
+        [cem, *_offspring(probe, post, pop.unravel, cem, states, direction)]
     )
     held_out = buffer.sample(keys[2], GRAD_BATCH)["state"]
     diag = _diagnostics(post, pop.unravel, sets, held_out)

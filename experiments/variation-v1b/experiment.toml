@@ -1,0 +1,51 @@
+name = "variation-v1b"
+question = "Do per-member critic-gradient offspring beat mean-critic gradient offspring with more steps (200 vs 50), and is any gain uncertainty rather than spread (vs mean + a random direction of the same size)?"
+
+envs = ["HalfCheetah-v5", "Swimmer-v5"]
+conditions = ["sc_erl-boot3-rgate"]
+seeds = [0]
+total_steps = 500_000
+
+[wandb]
+entity = "evo_rl"
+project = "triage_erl"
+tag = "variation-v1b"
+run_name = '^(?P<condition>.+)_(?P<env>[^_]+)_s(?P<seed>\d+)$'
+
+[metric]
+keys = ["perf/eval_rl", "eval_reward"]
+x = ["env_steps", "total_steps"]
+label = "eval return"
+final_window = 0.1
+
+# follow-up of variation-v1 (HC, Swimmer: member_vs_mean CI spans 0;
+# exploratory: member offspring are worse on average but more spread)
+# submission: slurm_run_array.sh task 60 (sc_erl-boot3-rgate, seed 0),
+#   EXTRA="algorithm.variation_probe=true" TOTAL_STEPS=500_000
+#   TAG=variation-v1b; v1 output dirs renamed to *.variation-v1 first
+# offline analysis, fixed before submission:
+#   python -m analysis.variation_report HalfCheetah-v5=<npz> Swimmer-v5=<npz>
+# per generation: 20 samples x_j of N(mean, scale^2 cov) of the
+# distribution the generation was asked from; seven sets, paired by j,
+# for T in (50, 200):
+#   cem     = x_j
+#   meanT   = x_j + T Adam(actor_lr) steps on -mean_k Q_k(s, pi(s))
+#   memberT = x_j + the same steps on -Q_{j mod K}(s, pi(s))
+#   randT   = meanT + u_j |memberT - meanT|, u_j a random unit direction
+#             (same u_j for both T)
+# (critic1 before this generation's training, embedding frozen, one replay
+# batch of 256 per step, the T=50 sets use the first 50 of the T=200
+# batches), then two independent episodes per candidate, same start states
+# across sets. q(set) = mean episode 2 over the top 5 of 20 by episode 1.
+[preregistration]
+primary = "per (env, T): member_vs_meanT = q(memberT) - q(meanT) and member_vs_randT = q(memberT) - q(randT), mean over generations"
+go = "on >= 1 (env, T): median grad_cos < 0.9 AND member_vs_meanT moving-block bootstrap CI (block 10 generations, 10k resamples, one-sided 97.5 % Bonferroni over 2 envs x 2 T -> 0.625 % percentile) lower bound > 0 AND member_vs_meanT >= 1 % of |q(cem)| AND member_vs_randT CI lower bound > 0"
+noise = "not GO, but on >= 1 (env, T) rand_vs_meanT CI lower bound > 0 and >= 1 % of |q(cem)|: the gain is gradient + spread, not posterior uncertainty; a different (non-uncertainty) paper direction"
+no_go = "neither: posterior-sampling variation closed (with v1), no dropout / evidential extension"
+report_only = ["mean_vs_cemT", "paired per-candidate truth member - mean", "spread (within-generation std of truth) per set", "step norms over |scale * sqrt(cov)|", "delta_cosT", "mean-critic Q per set"]
+
+[cluster]
+ssh_host = "wcss"
+
+[report]
+url = ""

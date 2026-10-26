@@ -114,14 +114,15 @@ Offline analysis of the dump lives outside the repo (results in `notes.md`).
 
 `algorithm.variation_probe=true` (`ensemble` | `bootstrapped`) writes
 `<hydra run dir>/variation_probe.npz` per generation:
-- 20 samples x_j of the asked CEM distribution, three paired sets:
-  `cem` = x_j, `mean` = x_j + 50 Adam steps on the mean critic,
-  `member` = x_j + the same steps on member Q_{j mod K};
+- 20 samples x_j of the asked CEM distribution, seven paired sets:
+  `cem` = x_j and, for T in 50, 200 Adam steps, `meanT` (mean critic),
+  `memberT` (member Q_{j mod K}), `randT` = `meanT` + a random direction
+  of norm |`memberT` − `meanT`|;
 - two episodes per candidate on the probe's own envs, member-gradient
-  cosines, step norms, action distances.
+  cosines, step norms.
 - Own envs, keys and head copies: nothing flows back into the algorithm.
 - Verdict: `python -m analysis.variation_report ENV=PATH ...`
-  (pre-registration in `experiments/variation-v1/experiment.toml`).
+  (pre-registration in `experiments/variation-v1b/experiment.toml`).
 
 ### Metrics (wandb, x-axis `env_steps`)
 

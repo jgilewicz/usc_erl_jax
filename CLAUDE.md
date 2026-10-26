@@ -70,8 +70,10 @@ src/
   for offline analysis. Metric only, same rule as `truth`.
 - `variation_probe` (`common/variation_probe.py`, verdict in
   `analysis/variation_report.py`): CEM vs mean-critic vs per-member
-  gradient offspring for the GECCO direction (uncertainty as a variation
-  operator). Metric only: own envs, key stream and head copies.
+  gradient offspring (50/200 steps) vs mean + same-size random spread,
+  for the GECCO direction (uncertainty as a variation operator). Metric
+  only: own envs, key stream and head copies. variation-v1 npz needs the
+  report at `c0421f9`.
 - `CriticHead.members` gives (K, B, 1) per-member Q (`ensemble`,
   `bootstrapped`); `bootstrapped` also overrides `next_value`.
 - `env_steps` is the x-axis for every performance claim.
