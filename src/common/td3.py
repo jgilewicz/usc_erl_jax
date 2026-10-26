@@ -85,27 +85,37 @@ def _td_target(
     state: TD3State,
     batch: Batch,
     key: jax.Array,
-) -> jax.Array:
-    noise_key, q1_key, q2_key = jax.random.split(key, 3)
+) -> tuple[jax.Array, jax.Array]:
+    # (critic1 target, critic2 target): equal unless the head bootstraps
+    # per member
+    noise_key, q1_key, q2_key, value_key = jax.random.split(key, 4)
     noise = jnp.clip(
         jax.random.normal(noise_key, batch["action"].shape) * cfg.policy_noise,
         -cfg.noise_clip,
         cfg.noise_clip,
     )
     target = state.target
-    z_next = jax.vmap(target.embedding)(batch["next_state"])
+    next_state = batch["next_state"]
+    z_next = jax.vmap(target.embedding)(next_state)
     next_action = jnp.clip(
         jax.vmap(target.actor)(z_next) + noise,
         -cfg.action_limit,
         cfg.action_limit,
     )
     # twin-min over point estimates: mean / mu for ensemble / evidential
-    q_next = jnp.minimum(
-        head.point(target.critic1, batch["next_state"], next_action, q1_key),
-        plain_point(target.critic2, batch["next_state"], next_action, q2_key),
+    shared = jnp.minimum(
+        head.point(target.critic1, next_state, next_action, q1_key),
+        plain_point(target.critic2, next_state, next_action, q2_key),
     )
+    value1 = head.next_value(
+        target.critic1, next_state, next_action, shared, value_key
+    )
+    discount = cfg.gamma * (1.0 - batch["done"])
     return jax.lax.stop_gradient(
-        batch["reward"] + cfg.gamma * (1.0 - batch["done"]) * q_next
+        (
+            batch["reward"] + discount * value1,
+            batch["reward"] + discount * shared,
+        )
     )
 
 
@@ -118,13 +128,13 @@ def _critic_update(
     key: jax.Array,
 ) -> tuple[TD3State, jax.Array]:
     target_key, k1, k2 = jax.random.split(key, 3)
-    target_q = _td_target(cfg, head, state, batch, target_key)
+    target1, target2 = _td_target(cfg, head, state, batch, target_key)
 
     def loss_fn(critics: tuple[Any, Critic]) -> jax.Array:
         critic1, critic2 = critics
         s, a = batch["state"], batch["action"]
-        return head.loss(critic1, s, a, target_q, k1) + plain_loss(
-            critic2, s, a, target_q, k2
+        return head.loss(critic1, s, a, target1, k1) + plain_loss(
+            critic2, s, a, target2, k2
         )
 
     critics = (state.online.critic1, state.online.critic2)

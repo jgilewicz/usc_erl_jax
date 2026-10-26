@@ -38,6 +38,13 @@ from common.surrogate import (
     population_stats,
 )
 from common.td3 import TD3State
+from common.variation_probe import (
+    Population,
+    Posterior,
+    VariationProbe,
+    make_variation_probe,
+    record_variation,
+)
 from modules.deep_modules import ActorHead, SharedStateEmbedding
 
 # CEM samples are iid, so slots are interchangeable; elitism owns slot -1
@@ -67,8 +74,13 @@ class SCERLConfig(ERLConfig):
     dropout_p: float = 0.1
     k_ensembles: int = 5
     evidential_lam: float = 0.1
+    # bootstrapped mode: weight of each member's frozen random prior
+    prior_scale: float = 3.0
     # dump per-step shadow rewards + own-state critic stats (metric only)
     probe_path: str | None = None
+    # dump CEM vs mean-critic vs per-member gradient offspring + two
+    # episodes each (metric only)
+    variation_probe_path: str | None = None
 
     def __post_init__(self) -> None:
         checks = {
@@ -83,10 +95,16 @@ class SCERLConfig(ERLConfig):
             or 0.0 < self.dropout_p < 1.0,
             "mc_samples must be >= 2": self.mode != "dropout"
             or self.mc_samples >= 2,
-            "k_ensembles must be >= 2": self.mode != "ensemble"
+            "k_ensembles must be >= 2": self.mode
+            not in ("ensemble", "bootstrapped")
             or self.k_ensembles >= 2,
+            "prior_scale must be >= 0": self.prior_scale >= 0.0,
             "probe_path needs a mode with sigma": self.probe_path is None
             or self.mode != "random",
+            "variation_probe_path needs mode ensemble or bootstrapped": (
+                self.variation_probe_path is None
+                or self.mode in ("ensemble", "bootstrapped")
+            ),
         }
         failed = [msg for msg, ok in checks.items() if not ok]
         if failed:
@@ -110,6 +128,7 @@ class Surrogate:
     beta_opt_state: optax.OptState
     beta_step: Any
     probe: HorizonProbe | None = None
+    variation: VariationProbe | None = None
     best_real_flat: jax.Array | None = None
     best_real_return: float = -np.inf
     pending_anchor: bool = False
@@ -146,6 +165,7 @@ def _head_factory(cfg: SCERLConfig) -> Callable[[int, int], CriticHead]:
             mc_samples=cfg.mc_samples,
             k_ensembles=cfg.k_ensembles,
             evidential_lam=cfg.evidential_lam,
+            prior_scale=cfg.prior_scale,
         )
 
     return factory
@@ -165,6 +185,16 @@ def _build_surrogate(run: Run, cfg: SCERLConfig) -> Surrogate:
     if cfg.probe_path is not None:
         probe = HorizonProbe(Path(cfg.probe_path), cfg.gamma)
         run.closers.append(probe.save)
+    variation = None
+    if cfg.variation_probe_path is not None:
+        variation = make_variation_probe(
+            cfg.env_name,
+            cfg.seed,
+            Path(cfg.variation_probe_path),
+            async_env=cfg.async_env,
+            lr=cfg.actor_lr,
+        )
+        run.closers += [variation.vec_env.close, variation.store.save]
     optimizer = optax.adam(cfg.beta_lr)
     log_beta = jnp.log(jnp.asarray(cfg.beta, dtype=jnp.float32))
     return Surrogate(
@@ -175,6 +205,7 @@ def _build_surrogate(run: Run, cfg: SCERLConfig) -> Surrogate:
         beta_opt_state=optimizer.init(log_beta),
         beta_step=make_beta_step(optimizer),
         probe=probe,
+        variation=variation,
     )
 
 
@@ -346,7 +377,31 @@ def _record_probe(
     )
 
 
+def _record_variation(
+    run: Run, sc: Surrogate, cfg: SCERLConfig, asked_from: Population
+) -> None:
+    assert sc.variation is not None and run.head.members is not None
+    online = run.td3_state.online
+    record_variation(
+        sc.variation,
+        asked_from,
+        Posterior(
+            members=run.head.members,
+            embedding=online.embedding,
+            critic=online.critic1,
+            k=cfg.k_ensembles,
+        ),
+        run.buffer,
+        run.horizon,
+        generation=run.generation,
+        env_steps=run.env_steps,
+    )
+
+
 def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
+    asked_from = Population(
+        run.cem.mu, run.cem.cov, run.cem.scale, run.unravel_head
+    )
     flat_pop, _ = ask_population(run)
     flat_pop = _inject_anchor(run, sc, flat_pop)
     pop_heads = jax.vmap(run.unravel_head)(flat_pop)
@@ -386,6 +441,8 @@ def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
             replay_mu=mu,
             replay_sigma=sigma,
         )
+    if sc.variation is not None:
+        _record_variation(run, sc, cfg, asked_from)
     metrics |= _surrogate_metrics(
         cfg,
         run.cem.parents,

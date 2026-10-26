@@ -7,7 +7,8 @@ defaults:
 
 name: sc_erl
 
-# per-individual gate: random | dropout | ensemble | evidential
+# per-individual gate: random | dropout | ensemble | evidential |
+# bootstrapped (ensemble with per-member targets + random priors)
 mode: random
 # ablation: keep the mode's critic (TD3 + sigma) but gate at random by omega
 random_gate: false
@@ -27,6 +28,12 @@ mc_samples: 25
 dropout_p: 0.1
 k_ensembles: 5
 evidential_lam: 0.1
+# bootstrapped: weight of each member's frozen random prior network
+prior_scale: 3.0
 # dump per-step shadow rewards + critic stats on each individual's own
 # states to <hydra run dir>/horizon_probe.npz (metric only; costs compute)
 horizon_probe: false
+# dump CEM samples vs mean-critic vs per-member gradient offspring, two
+# episodes each, to <hydra run dir>/variation_probe.npz (ensemble |
+# bootstrapped; metric only; costs compute and uncounted env steps)
+variation_probe: false

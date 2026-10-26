@@ -12,7 +12,7 @@ import optax
 from modules.deep_modules import Critic, EvidentialCritic
 
 # usc_erl's SurrogateMode. "random" has no uncertainty: plain twin critics.
-Mode = Literal["random", "dropout", "ensemble", "evidential"]
+Mode = Literal["random", "dropout", "ensemble", "evidential", "bootstrapped"]
 MODES: tuple[str, ...] = get_args(Mode)
 
 # EnsembleModule.compute_loss: each member regresses its own Bernoulli(0.5)
@@ -26,6 +26,25 @@ LossFn = Callable[[Any, jax.Array, jax.Array, jax.Array, jax.Array], jax.Array]
 StatsFn = Callable[
     [Any, jax.Array, jax.Array, jax.Array], tuple[jax.Array, jax.Array]
 ]
+# (target critic1, next states, next actions, shared next value, key)
+#   -> next-state value critic1 regresses on; critic2 always gets `shared`
+NextValueFn = Callable[
+    [Any, jax.Array, jax.Array, jax.Array, jax.Array], jax.Array
+]
+
+
+def _shared_next_value(
+    critic: Any,
+    next_states: jax.Array,
+    next_actions: jax.Array,
+    shared: jax.Array,
+    key: jax.Array,
+) -> jax.Array:
+    return shared
+
+
+# (critic1, states, actions) -> (K, B, 1) per-member Q; None without members
+MemberFn = Callable[[Any, jax.Array, jax.Array], jax.Array]
 
 
 class CriticHead(NamedTuple):
@@ -38,6 +57,8 @@ class CriticHead(NamedTuple):
     loss: LossFn
     # per-state (mu, sigma), each (B,)
     stats: StatsFn
+    next_value: NextValueFn = _shared_next_value
+    members: MemberFn | None = None
 
 
 def plain_point(
@@ -116,6 +137,71 @@ def _ensemble_loss(
     return jnp.sum(per_member)
 
 
+class Bootstrapped(NamedTuple):
+    # (K,)-stacked trainable members and frozen random priors (Osband et
+    # al. 2018): Q_k = member_k + prior_scale * prior_k
+    members: Critic
+    priors: Critic
+
+
+def _bootstrapped_q(prior_scale: float) -> Callable[..., jax.Array]:
+    def member_q(
+        critic: Bootstrapped, states: jax.Array, actions: jax.Array
+    ) -> jax.Array:
+        prior = jax.lax.stop_gradient(_member_q(critic.priors, states, actions))
+        return _member_q(critic.members, states, actions) + prior_scale * prior
+
+    return member_q
+
+
+def _bootstrapped_head(
+    build: Callable[[jax.Array], Bootstrapped],
+    twin: Callable[[jax.Array], Critic],
+    prior_scale: float,
+) -> CriticHead:
+    member_q = _bootstrapped_q(prior_scale)
+
+    def point(
+        critic: Bootstrapped, states: jax.Array, actions: jax.Array, key: Any
+    ) -> jax.Array:
+        return member_q(critic, states, actions).mean(axis=0)
+
+    def stats(
+        critic: Bootstrapped, states: jax.Array, actions: jax.Array, key: Any
+    ) -> tuple[jax.Array, jax.Array]:
+        q = member_q(critic, states, actions)[..., 0]
+        return q.mean(axis=0), q.std(axis=0, ddof=1)
+
+    def next_value(
+        critic: Bootstrapped,
+        next_states: jax.Array,
+        next_actions: jax.Array,
+        shared: jax.Array,
+        key: jax.Array,
+    ) -> jax.Array:
+        # (K, B, 1) per-member values: each member bootstraps on itself, so
+        # disagreement propagates through Bellman; the shift keeps TD3's
+        # twin-min pessimism on the mean (mean_k target = shared)
+        q = member_q(critic, next_states, next_actions)
+        return q - q.mean(axis=0) + shared
+
+    def loss(
+        critic: Bootstrapped,
+        states: jax.Array,
+        actions: jax.Array,
+        target: jax.Array,
+        key: jax.Array,
+    ) -> jax.Array:
+        q = member_q(critic, states, actions)
+        mask = jax.random.bernoulli(key, _BOOTSTRAP_P, q.shape)
+        per_member = jnp.sum(
+            optax.huber_loss(q, target, delta=1.0) * mask, axis=(1, 2)
+        ) / (jnp.sum(mask, axis=(1, 2)) + 1e-8)
+        return jnp.sum(per_member)
+
+    return CriticHead(build, twin, point, loss, stats, next_value, member_q)
+
+
 def _evidential_point(
     critic: EvidentialCritic,
     states: jax.Array,
@@ -187,6 +273,7 @@ def make_head(
     mc_samples: int = 25,
     k_ensembles: int = 5,
     evidential_lam: float = 0.1,
+    prior_scale: float = 3.0,
 ) -> CriticHead:
     # usc_erl bakes dropout into every critic in dropout mode, twin included
     dropout = dropout_p if mode == "dropout" else 0.0
@@ -200,6 +287,9 @@ def make_head(
             hidden_dims=hidden_dims,
         )
 
+    def ensemble(key: jax.Array) -> Critic:
+        return eqx.filter_vmap(plain)(jax.random.split(key, k_ensembles))
+
     match mode:
         case "random":
             return CriticHead(plain, plain, plain_point, plain_loss, _no_sigma)
@@ -207,18 +297,13 @@ def make_head(
             stats = _mc_dropout_stats(mc_samples)
             return CriticHead(plain, plain, plain_point, plain_loss, stats)
         case "ensemble":
-
-            def ensemble(key: jax.Array) -> Critic:
-                return eqx.filter_vmap(plain)(
-                    jax.random.split(key, k_ensembles)
-                )
-
             return CriticHead(
                 ensemble,
                 plain,
                 _ensemble_point,
                 _ensemble_loss,
                 _ensemble_stats,
+                members=_member_q,
             )
         case "evidential":
 
@@ -234,5 +319,12 @@ def make_head(
                 _evidential_loss(evidential_lam),
                 _evidential_stats,
             )
+        case "bootstrapped":
+
+            def bootstrapped(key: jax.Array) -> Bootstrapped:
+                member_key, prior_key = jax.random.split(key)
+                return Bootstrapped(ensemble(member_key), ensemble(prior_key))
+
+            return _bootstrapped_head(bootstrapped, plain, prior_scale)
         case other:
             raise ValueError(f"unknown surrogate mode {other!r}; use {MODES}")

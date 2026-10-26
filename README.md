@@ -76,9 +76,12 @@ CEM.ask() ──► pop × ActorHead   (slot 0: RL actor, 1: best-ever real, -1:
 | `dropout` | `Critic(dropout=dropout_p)`, twin too | std over `mc_samples` MC passes |
 | `ensemble` | `k_ensembles` vmapped `Critic`s, bootstrapped Huber | std over members |
 | `evidential` | `EvidentialCritic`, NIG loss (`evidential_lam`) | √(β/(v(α−1))) |
+| `bootstrapped` | `k_ensembles` members + frozen random priors (`prior_scale`), each member bootstraps on itself | std over members |
 
 critic2 is always a plain `Critic` (MSE); the TD3 target is
 `min(point(critic1), critic2)`, the actor follows `point(critic1)`.
+`bootstrapped` shifts that target per member by the member's deviation
+from the mean, so disagreement propagates through Bellman.
 
 - **Critic-vs-gate ablation**: `algorithm.random_gate=true` keeps the
   mode's critic (TD3, σ, β fit, `gate/auc` logging) but gates by `omega`.
@@ -106,6 +109,19 @@ just train sc_erl HalfCheetah-v5 algorithm.mode=ensemble
 - metric only, never fed back to the algorithm.
 
 Offline analysis of the dump lives outside the repo (results in `notes.md`).
+
+### Variation probe (offline, metric only)
+
+`algorithm.variation_probe=true` (`ensemble` | `bootstrapped`) writes
+`<hydra run dir>/variation_probe.npz` per generation:
+- 20 samples x_j of the asked CEM distribution, three paired sets:
+  `cem` = x_j, `mean` = x_j + 50 Adam steps on the mean critic,
+  `member` = x_j + the same steps on member Q_{j mod K};
+- two episodes per candidate on the probe's own envs, member-gradient
+  cosines, step norms, action distances.
+- Own envs, keys and head copies: nothing flows back into the algorithm.
+- Verdict: `python -m analysis.variation_report ENV=PATH ...`
+  (pre-registration in `experiments/variation-v1/experiment.toml`).
 
 ### Metrics (wandb, x-axis `env_steps`)
 
@@ -149,7 +165,8 @@ seed 0; details in the gitignored `notes.md`):
   `train-all`.
 - `slurm_run_array.sh`: the only slurm script; one `(condition, seed)`
   per task — sac, ppo, td3, crossq, erl, `sc_erl-random`, 3 σ-modes with
-  the uncertainty gate, 3 with `random_gate`; 12 × 5 = 60 tasks. Run
+  the uncertainty gate, 3 with `random_gate`, `sc_erl-boot3-rgate`;
+  13 × 5 = 65 tasks (the thesis matrix uses the first 60). Run
   `sbatch` from the checkout (or set `PROJECT_DIR`); it runs
   `.venv/bin/python` directly, so `uv sync` on the login node first.
   `EXTRA="..."` appends Hydra overrides to every task in the array (keys

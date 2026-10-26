@@ -16,7 +16,8 @@ src/
   train.py           # single Hydra entrypoint (thin: env workers re-import it)
   runner.py          # run_training + dispatch, baselines + ERL
   algos/erl.py        # ERL (EvoRainbow) training loop
-  algos/sc_erl.py     # SC-ERL: per-individual surrogate gate (random | dropout | ensemble | evidential)
+  algos/sc_erl.py     # SC-ERL: per-individual surrogate gate (random | dropout | ensemble | evidential | bootstrapped)
+  analysis/           # offline verdicts of pre-registered probes
   baselines/          # SBX agent construction, vec-env wrapping, wandb callback
   common/             # replay buffer, rollout, fused TD3, critic heads per mode, surrogate gate/LCB, metrics
   modules/             # equinox nn modules (Critic, EvidentialCritic, SharedStateEmbedding, ActorHead) + CEM
@@ -67,6 +68,12 @@ src/
   need the same mode with `random_gate=true` at equal `real_frac`.
 - `horizon_probe`: per-step shadow trajectories + own-state critic stats
   for offline analysis. Metric only, same rule as `truth`.
+- `variation_probe` (`common/variation_probe.py`, verdict in
+  `analysis/variation_report.py`): CEM vs mean-critic vs per-member
+  gradient offspring for the GECCO direction (uncertainty as a variation
+  operator). Metric only: own envs, key stream and head copies.
+- `CriticHead.members` gives (K, B, 1) per-member Q (`ensemble`,
+  `bootstrapped`); `bootstrapped` also overrides `next_value`.
 - `env_steps` is the x-axis for every performance claim.
 - No `tests/` suite: verify with ruff, ty and a tiny-budget smoke run
   (`total_steps=3000 algorithm.horizon=100 algorithm.pop_size=4 ...`).
@@ -79,7 +86,8 @@ src/
 
 `slurm_run_array.sh` is the only slurm script: array-job-per-`(condition,
 seed)` for one `TARGET_ENV` — sac, ppo, td3, crossq, erl, sc_erl × 4 modes,
-3 σ-modes × `random_gate`, 12 × 5 = 60 tasks. `PROJECT_DIR` defaults to
+3 σ-modes × `random_gate`, `sc_erl-boot3-rgate`, 13 × 5 = 65 tasks
+(thesis matrix: first 60). `PROJECT_DIR` defaults to
 `SLURM_SUBMIT_DIR`. Jobs run `.venv/bin/python` directly — `uv sync` on
 the login node first; parallel `uv run` calls race on the shared uv cache.
 

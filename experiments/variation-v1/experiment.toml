@@ -1,0 +1,46 @@
+name = "variation-v1"
+question = "Do offspring made by gradient ascent on one posterior member of the critic (Q_k, bootstrapped ensemble with random priors) give a better CEM elite than offspring made by the same ascent on the mean critic?"
+
+envs = ["HalfCheetah-v5", "dog-stand", "Swimmer-v5"]
+conditions = ["sc_erl-boot3-rgate"]
+seeds = [0]
+total_steps = 500_000
+
+[wandb]
+entity = "evo_rl"
+project = "triage_erl"
+tag = "variation-v1"
+run_name = '^(?P<condition>.+)_(?P<env>[^_]+)_s(?P<seed>\d+)$'
+
+[metric]
+keys = ["perf/eval_rl", "eval_reward"]
+x = ["env_steps", "total_steps"]
+label = "eval return"
+final_window = 0.1
+
+# submission: slurm_run_array.sh task 60 (sc_erl-boot3-rgate, seed 0),
+#   EXTRA="algorithm.variation_probe=true" TOTAL_STEPS=500_000
+# offline analysis, fixed before submission:
+#   python -m analysis.variation_report HalfCheetah-v5=<npz> \
+#     dog-stand=<npz> Swimmer-v5=<npz>
+# per generation: 20 samples x_j of N(mean, scale^2 cov) of the
+# distribution the generation was asked from; three sets, paired by j:
+#   cem    = x_j
+#   mean   = x_j + 50 Adam(actor_lr) steps on -mean_k Q_k(s, pi(s))
+#   member = x_j + the same steps on -Q_{j mod K}(s, pi(s))
+# (critic1 before this generation's training, embedding frozen, one shared
+# replay batch of 256 per step), then two independent episodes per
+# candidate, same start states across sets.
+# q(set) = mean episode 2 over the top 5 of 20 by episode 1.
+# grad_cos = mean pairwise cos between the K member gradients at x_j.
+[preregistration]
+primary = "member_vs_mean = q(member) - q(mean), mean over generations, per env"
+go = "on >= 1 env: median over generations of grad_cos < 0.9 AND member_vs_mean moving-block bootstrap CI (block 10 generations, 10k resamples, one-sided 97.5 % Bonferroni over 3 envs -> 0.83 % percentile) lower bound > 0 AND member_vs_mean >= 1 % of |q(cem)|; and no env with the CI upper bound (99.17 %) of member_vs_mean < 0"
+no_go = "posterior-sampling variation closed: grad_cos >= 0.9 means the posterior proposes the mean-critic direction; otherwise the gain is CEM-RL's (mean critic), not uncertainty's"
+report_only = ["mean_vs_cem (gradient mutation effect)", "member_vs_cem", "mean episode return per set", "step norms over |scale * sqrt(cov)|", "action distance member<->mean vs mean<->cem", "delta_cos(member step, mean step)", "icc per set", "mean-critic Q per set"]
+
+[cluster]
+ssh_host = "wcss"
+
+[report]
+url = ""

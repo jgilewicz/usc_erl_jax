@@ -1,10 +1,11 @@
 #!/bin/bash -l
 # One (condition, seed) pair per array task, for a single TARGET_ENV.
-# 12 conditions x 5 seeds = 60 tasks: SBX baselines, ERL, SC-ERL x 4 modes,
-# and the 3 uncertainty critics under a random gate (critic-vs-gate ablation).
+# 13 conditions x 5 seeds = 65 tasks: SBX baselines, ERL, SC-ERL x 4 modes,
+# the 3 uncertainty critics under a random gate (critic-vs-gate ablation),
+# and the bootstrapped critic (prior_scale 3) under a random gate.
 #
 #   cd /path/to/usc_erl_jax && TARGET_ENV=HalfCheetah-v5 \
-#     sbatch --array=0-59 slurm_run_array.sh
+#     sbatch --array=0-64 slurm_run_array.sh
 #
 # Task id = condition_index * 5 + seed, e.g. only SC-ERL ensemble
 # (condition 7): sbatch --array=35-39 slurm_run_array.sh
@@ -18,7 +19,7 @@
 # n_envs (SBX baselines' vec-env count) follows SLURM_CPUS_PER_TASK. ERL
 # runs pop_size+1 env workers, SC-ERL pop_size+1 plus 2*eval.episodes for
 # evaluation, regardless of -c. Raise -c if a run is CPU-bound, e.g.
-#   sbatch --array=0-59 --cpus-per-task=16 slurm_run_array.sh
+#   sbatch --array=0-64 --cpus-per-task=16 slurm_run_array.sh
 
 #SBATCH -N 1
 #SBATCH -c 8
@@ -52,6 +53,7 @@ CONDITIONS=(
   "sc_erl-dropout-rgate|algorithm=sc_erl algorithm.mode=dropout algorithm.random_gate=true"
   "sc_erl-ensemble-rgate|algorithm=sc_erl algorithm.mode=ensemble algorithm.random_gate=true"
   "sc_erl-evidential-rgate|algorithm=sc_erl algorithm.mode=evidential algorithm.random_gate=true"
+  "sc_erl-boot3-rgate|algorithm=sc_erl algorithm.mode=bootstrapped algorithm.prior_scale=3 algorithm.random_gate=true"
 )
 SEEDS=(0 1 2 3 4)
 N_SEEDS=${#SEEDS[@]}
