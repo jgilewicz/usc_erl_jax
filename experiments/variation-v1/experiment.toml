@@ -44,3 +44,16 @@ ssh_host = "wcss"
 
 [report]
 url = ""
+
+# submitted 2026-10-26 @ 8aed6e0, array task 60, lem-gpu-short
+[[jobs]]
+id = "6168325"
+env = "HalfCheetah-v5"
+
+[[jobs]]
+id = "6168326"
+env = "Swimmer-v5"
+
+[[jobs]]
+id = "6168327"
+env = "dog-stand"
