@@ -107,6 +107,16 @@ just train sc_erl HalfCheetah-v5 algorithm.mode=ensemble
 
 Offline analysis of the dump lives outside the repo (results in `notes.md`).
 
+### Behaviour probe (behavior-probe-v1)
+
+`algorithm.behavior_probe=true` (any mode) writes
+`<hydra run dir>/behavior_probe.npz` per post-warmup generation:
+- actions of every individual and of the CEM mean on a fixed 512-state set
+  (drawn once with the probe's own key), flat heads, truth, μ, real.
+- metric only: the run is identical with and without it.
+- verdict: `cd src && python -m analysis.behavior_report <npz>`; P1/P2 as
+  pre-registered in `experiments/behavior-probe-v1/experiment.toml`.
+
 ### Metrics (wandb, x-axis `env_steps`)
 
 Ground truth = the undiscounted return of one full episode per individual

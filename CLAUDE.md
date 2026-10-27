@@ -67,6 +67,11 @@ src/
   need the same mode with `random_gate=true` at equal `real_frac`.
 - `horizon_probe`: per-step shadow trajectories + own-state critic stats
   for offline analysis. Metric only, same rule as `truth`.
+- `behavior_probe` (`common/behavior_probe.py`, verdict in
+  `analysis/behavior_report.py`): actions on a fixed state set + heads per
+  generation, to test cross-generation ranking in behaviour vs weight
+  space. Own key stream; recorded before `cem.tell` so the CEM mean is the
+  one asked.
 - `env_steps` is the x-axis for every performance claim.
 - No `tests/` suite: verify with ruff, ty and a tiny-budget smoke run
   (`total_steps=3000 algorithm.horizon=100 algorithm.pop_size=4 ...`).

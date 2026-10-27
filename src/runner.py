@@ -19,6 +19,7 @@ from baselines.envs import build_vec_env
 from baselines.wandb_logging import WandbLoggingCallback
 
 PROBE_FILE = "horizon_probe.npz"
+BEHAVIOR_FILE = "behavior_probe.npz"
 
 
 def _erl_kwargs(cfg: DictConfig) -> dict[str, Any]:
@@ -75,6 +76,7 @@ def _run_erl(cfg: DictConfig) -> float:
 
 def _run_sc_erl(cfg: DictConfig) -> float:
     algo_cfg = cfg.algorithm
+    out_dir = Path(HydraConfig.get().runtime.output_dir)
     sc_erl_cfg = SCERLConfig(
         **_erl_kwargs(cfg),
         mode=algo_cfg.mode,
@@ -89,8 +91,11 @@ def _run_sc_erl(cfg: DictConfig) -> float:
         dropout_p=algo_cfg.dropout_p,
         k_ensembles=algo_cfg.k_ensembles,
         evidential_lam=algo_cfg.evidential_lam,
-        probe_path=str(Path(HydraConfig.get().runtime.output_dir) / PROBE_FILE)
+        probe_path=str(out_dir / PROBE_FILE)
         if algo_cfg.horizon_probe
+        else None,
+        behavior_probe_path=str(out_dir / BEHAVIOR_FILE)
+        if algo_cfg.behavior_probe
         else None,
     )
     td3_state = train_sc_erl(sc_erl_cfg, on_generation=wandb.log)

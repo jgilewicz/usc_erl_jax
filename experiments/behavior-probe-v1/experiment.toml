@@ -1,0 +1,58 @@
+name = "behavior-probe-v1"
+question = "Does return (or the critic's error truth - mu) transfer across generations in behaviour space (actions on a fixed state set), unlike in weight space, well enough to improve the critic's elite?"
+
+envs = ["HalfCheetah-v5"]
+conditions = ["sc_erl-random"]
+seeds = [0]
+total_steps = 500_000
+
+[wandb]
+entity = "evo_rl"
+project = "triage_erl"
+tag = "behavior-probe-v1"
+run_name = '^(?P<condition>.+)_(?P<env>[^_]+)_s(?P<seed>\d+)$'
+
+[metric]
+keys = ["perf/eval_rl", "eval_reward"]
+x = ["env_steps", "total_steps"]
+label = "eval return"
+final_window = 0.1
+
+# why: notes §4.3 (weight / fingerprint surrogates 0.50-0.56) ruled out
+# dimension, not representation invariance. ActorHead is linear on
+# z = phi(s) and phi drifts with the RL actor, so the same W is a
+# different policy next generation; behaviour -> return may be stationary
+# where W -> return is not. Existing dumps cannot test it (per-state
+# scalars on a fresh batch per generation, no heads).
+# HC only: dog truth ICC 0.18 caps any ranker (notes §5).
+#
+# dump per generation (metric only, own copies, nothing flows back):
+#   actions: (10, 512, act_dim) pi_i(s) on a FIXED state set S sampled
+#            once from the buffer at the end of warmup
+#   heads:   (10, D) flat ActorHead params as asked
+#   truth, mu, real (shadow rollout: truth exists for all 10)
+#
+# offline analysis, fixed before submission (labels = all 10 shadow
+# truths per generation: an upper bound; in the loop only real ones exist):
+#   target per generation: within-generation z-score of truth (ranking is
+#   all CEM uses; critic scale drifts between generations)
+#   residual target: z(truth) - z(mu)
+#   archive: generations [t-20, t) -> predict generation t, t >= 40
+#   descriptors: W = heads, B = actions flattened, each standardised on
+#   the archive
+#   models: kNN (k = 10, inverse-distance), GP-RBF (median-heuristic
+#   length scale, noise fitted on the archive)
+#   score per generation: elite_overlap (top 5 of 10) vs truth
+#   CI: moving-block bootstrap over generations, block 10, 10k resamples
+[preregistration]
+primary = "P2: elite_overlap(z(mu) + r_hat_B) - elite_overlap(mu), best of the two models chosen on generations 40-80, tested on generations > 80"
+p1 = "P1: elite_overlap(B model of z(truth)) - elite_overlap(W model of z(truth)): does behaviour transfer better than weights"
+go = "P2 >= 0.03 with one-sided 97.5 % CI lower bound > 0: residual ranker in behaviour space adds to the critic -> learn a non-linear behaviour encoder (step 2)"
+no_go = "P2 CI includes 0 or P2 < 0.03: behaviour-space ranking closed for this setting; P1 > 0 alone is reported (representation invariance real, but the critic already exploits it)"
+report_only = ["within-generation leave-one-out kNN on B, k = 3 (upper bound without transfer; k = N - 1 predicts -z_i / (N - 1))", "B_vs_mu: elite_overlap(B model of z(truth)) - elite_overlap(mu) with CI (r_hat shrinks towards 0, so P2 is conservative)", "elite_overlap of B / W models alone vs mu and chance 0.5", "Spearman per generation", "effective dimension (participation ratio) of B among siblings vs across the archive", "drift: mean |a_i(S)| change of the CEM mean head across generations vs sibling spread"]
+
+[cluster]
+ssh_host = "wcss"
+
+[report]
+url = ""

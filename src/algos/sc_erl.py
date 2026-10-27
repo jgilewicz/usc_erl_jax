@@ -25,6 +25,7 @@ from algos.erl import (
     to_floats,
     train_and_merge,
 )
+from common.behavior_probe import BehaviorProbe
 from common.critic_heads import MODES, CriticHead, make_head
 from common.horizon_probe import HorizonProbe, StepRecorder, own_state_stats
 from common.metrics import gate_metrics, selection_metrics, uncertainty_auc
@@ -69,6 +70,8 @@ class SCERLConfig(ERLConfig):
     evidential_lam: float = 0.1
     # dump per-step shadow rewards + own-state critic stats (metric only)
     probe_path: str | None = None
+    # dump per-gen actions on a fixed state set + heads (metric only)
+    behavior_probe_path: str | None = None
 
     def __post_init__(self) -> None:
         checks = {
@@ -110,6 +113,7 @@ class Surrogate:
     beta_opt_state: optax.OptState
     beta_step: Any
     probe: HorizonProbe | None = None
+    behavior: BehaviorProbe | None = None
     best_real_flat: jax.Array | None = None
     best_real_return: float = -np.inf
     pending_anchor: bool = False
@@ -165,6 +169,12 @@ def _build_surrogate(run: Run, cfg: SCERLConfig) -> Surrogate:
     if cfg.probe_path is not None:
         probe = HorizonProbe(Path(cfg.probe_path), cfg.gamma)
         run.closers.append(probe.save)
+    behavior = None
+    if cfg.behavior_probe_path is not None:
+        behavior = BehaviorProbe.create(
+            Path(cfg.behavior_probe_path), cfg.gamma, cfg.seed
+        )
+        run.closers.append(behavior.writer.save)
     optimizer = optax.adam(cfg.beta_lr)
     log_beta = jnp.log(jnp.asarray(cfg.beta, dtype=jnp.float32))
     return Surrogate(
@@ -175,6 +185,7 @@ def _build_surrogate(run: Run, cfg: SCERLConfig) -> Surrogate:
         beta_opt_state=optimizer.init(log_beta),
         beta_step=make_beta_step(optimizer),
         probe=probe,
+        behavior=behavior,
     )
 
 
@@ -346,7 +357,33 @@ def _record_probe(
     )
 
 
+def _record_behavior(
+    run: Run,
+    behavior: BehaviorProbe,
+    flat_pop: jax.Array,
+    pop_heads: ActorHead,
+    asked_mu: jax.Array,
+    *,
+    truth: jax.Array,
+    mu: jax.Array,
+    real: jax.Array,
+) -> None:
+    behavior.record(
+        run.buffer,
+        run.td3_state.online.embedding,
+        pop_heads,
+        jax.vmap(run.unravel_head)(asked_mu[None]),
+        flat_pop,
+        truth=truth,
+        mu=mu,
+        real=real,
+        generation=run.generation,
+        env_steps=run.env_steps,
+    )
+
+
 def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
+    asked_mu = run.cem.mu
     flat_pop, _ = ask_population(run)
     flat_pop = _inject_anchor(run, sc, flat_pop)
     pop_heads = jax.vmap(run.unravel_head)(flat_pop)
@@ -364,6 +401,17 @@ def _generation(run: Run, sc: Surrogate, cfg: SCERLConfig) -> Metrics:
     calibrated = calibrate(
         observed, decision.real, mu, sigma, sc.log_beta, run.undiscount_scale
     )
+    if sc.behavior is not None and not warmup:
+        _record_behavior(
+            run,
+            sc.behavior,
+            flat_pop,
+            pop_heads,
+            asked_mu,
+            truth=truth,
+            mu=mu,
+            real=decision.real,
+        )
     _update_anchor(sc, flat_pop, observed, decision.real)
     run.cem.tell(calibrated.fitness, flat_pop, elite_candidates=decision.real)
     sc.pending_anchor = n_real > 0

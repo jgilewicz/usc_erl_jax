@@ -30,3 +30,7 @@ evidential_lam: 0.1
 # dump per-step shadow rewards + critic stats on each individual's own
 # states to <hydra run dir>/horizon_probe.npz (metric only; costs compute)
 horizon_probe: false
+# dump per-generation actions of every individual and the CEM mean on a
+# fixed 512-state set, flat heads, truth and mu to
+# <hydra run dir>/behavior_probe.npz (metric only; behavior-probe-v1)
+behavior_probe: false
