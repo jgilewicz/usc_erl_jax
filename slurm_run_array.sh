@@ -1,7 +1,9 @@
 #!/bin/bash -l
 # One (condition, seed) pair per array task, for a single TARGET_ENV.
-# 12 conditions x 5 seeds = 60 tasks: SBX baselines, ERL, SC-ERL x 4 modes,
-# and the 3 uncertainty critics under a random gate (critic-vs-gate ablation).
+# 13 conditions x 5 seeds = 65 tasks: SBX baselines, ERL, SC-ERL x 4 modes,
+# the 3 uncertainty critics under a random gate (critic-vs-gate ablation),
+# and MAP-Elites with the UQD probe (brax QD tasks only: walker2d-uni,
+# ant-omni; TOTAL_STEPS is ignored there).
 #
 #   cd /path/to/usc_erl_jax && TARGET_ENV=HalfCheetah-v5 \
 #     sbatch --array=0-59 slurm_run_array.sh
@@ -52,6 +54,7 @@ CONDITIONS=(
   "sc_erl-dropout-rgate|algorithm=sc_erl algorithm.mode=dropout algorithm.random_gate=true"
   "sc_erl-ensemble-rgate|algorithm=sc_erl algorithm.mode=ensemble algorithm.random_gate=true"
   "sc_erl-evidential-rgate|algorithm=sc_erl algorithm.mode=evidential algorithm.random_gate=true"
+  "map_elites-uqd|algorithm=map_elites algorithm.uqd_probe=true"
 )
 SEEDS=(0 1 2 3 4)
 N_SEEDS=${#SEEDS[@]}

@@ -12,6 +12,8 @@ from stable_baselines3.common.callbacks import CallbackList, EvalCallback
 from algos.erl import ERLConfig
 from algos.erl import evaluate_actor as evaluate_erl_actor
 from algos.erl import train as train_erl
+from algos.map_elites import MAPElitesConfig
+from algos.map_elites import train as train_map_elites
 from algos.sc_erl import SCERLConfig
 from algos.sc_erl import train as train_sc_erl
 from baselines.agents import build_agent
@@ -19,6 +21,7 @@ from baselines.envs import build_vec_env
 from baselines.wandb_logging import WandbLoggingCallback
 
 PROBE_FILE = "horizon_probe.npz"
+UQD_PROBE_FILE = "uqd_probe.npz"
 
 
 def _erl_kwargs(cfg: DictConfig) -> dict[str, Any]:
@@ -102,6 +105,32 @@ def _run_sc_erl(cfg: DictConfig) -> float:
     )
 
 
+def _run_map_elites(cfg: DictConfig) -> float:
+    algo_cfg = cfg.algorithm
+    out_dir = Path(HydraConfig.get().runtime.output_dir)
+    archive = train_map_elites(
+        MAPElitesConfig(
+            task=cfg.env.id,
+            seed=cfg.seed,
+            iterations=int(algo_cfg.iterations),
+            batch_size=int(algo_cfg.batch_size),
+            grid_shape=tuple(algo_cfg.grid_shape),
+            hidden=tuple(algo_cfg.hidden),
+            iso_sigma=float(algo_cfg.iso_sigma),
+            line_sigma=float(algo_cfg.line_sigma),
+            eval_chunk=int(algo_cfg.eval_chunk),
+            log_interval=int(algo_cfg.log_interval),
+            probe_path=str(out_dir / UQD_PROBE_FILE)
+            if algo_cfg.uqd_probe
+            else None,
+            probe_interval=int(algo_cfg.probe_interval),
+            probe_repeats=int(algo_cfg.probe_repeats),
+        ),
+        on_iteration=wandb.log,
+    )
+    return float(archive.fitness.max())
+
+
 def _run_sb3(cfg: DictConfig) -> float:
     train_env = build_vec_env(cfg.env.id, cfg.n_envs, cfg.seed)
     eval_env = build_vec_env(cfg.eval_env.id, 1, cfg.seed + 10_000)
@@ -137,7 +166,11 @@ def run_training(cfg: DictConfig) -> float:
             "dict[str, Any]", OmegaConf.to_container(cfg, resolve=True)
         ),
     )
-    dispatch = {"erl": _run_erl, "sc_erl": _run_sc_erl}
+    dispatch = {
+        "erl": _run_erl,
+        "sc_erl": _run_sc_erl,
+        "map_elites": _run_map_elites,
+    }
     if cfg.algorithm.name in dispatch:
         # x-axis is interaction, not iteration: generation cost varies by algorithm
         wandb.define_metric("env_steps")

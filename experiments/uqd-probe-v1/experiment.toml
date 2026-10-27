@@ -1,0 +1,54 @@
+name = "uqd-probe-v1"
+question = "Under reset noise, are MAP-Elites elites lucky, and can an empirical-Bayes replacement rule (heteroscedastic or lineage prior) recover decisions the raw rule gets wrong?"
+
+envs = ["walker2d-uni", "ant-omni"]
+conditions = ["map_elites-uqd"]
+seeds = [0]
+# map_elites budget is algorithm.iterations=2000 x batch 256 = 512k
+# evaluations; total_steps is ignored
+total_steps = 0
+
+[wandb]
+entity = "evo_rl"
+project = "triage_erl"
+tag = "uqd-probe-v1"
+run_name = '^(?P<condition>.+)_(?P<env>[^_]+)_s(?P<seed>\d+)$'
+
+[metric]
+keys = ["qd/max_fitness"]
+x = ["env_steps"]
+label = "archive max fitness (single-eval, illusory)"
+final_window = 0.1
+
+# offline analysis, fixed before submission:
+#   python -m analysis.uqd_report walker2d-uni=<npz> ant-omni=<npz>
+# every 100 iterations: all 1024 elites and the 256 offspring re-evaluated
+# 16x each on the probe's own key stream (truth mu = mean of 16).
+# contested decision = batch winner vs the incumbent of an occupied cell.
+# gain(rule) = mean over contested of accept * (mu_off - mu_elite);
+# oracle = mean max(mu_off - mu_elite, 0); headroom = oracle - raw.
+# rules (sigma from the repeats = oracle, prior by method of moments over
+# the generation's offspring):
+#   raw          y_off > y_elite (what MAP-Elites did; asserted equal)
+#   eb_hetero    shrink both toward the population prior, per-individual
+#                sigma
+#   eb_lineage   offspring shrunk toward mu(parent1), elite as eb_hetero
+#   elite_truth  y_off > mu_elite (ceiling for elite re-evaluation)
+[preregistration]
+primary = "per task: P1 then P2"
+p1 = "gap exists: lucky_z = mean(y_elite - mu_elite) / rms(sigma_elite) over occupied cells, moving-block bootstrap CI (block 3 probes, 10k resamples) lower bound > 0.5, and regret_raw = sum headroom / sum oracle gain >= 20 %"
+p2 = "for some rule in {eb_hetero, eb_lineage}: delta = gain(rule) - gain(raw) per probe, one-sided 97.5 % CI with Bonferroni over 2 rules x 2 tasks (0.625 % percentile) lower bound > 0, and delta recovers >= 10 % of headroom"
+go = "P1 and P2 on at least one task"
+no_go = "close the UQD replacement-rule direction; record in notes.md"
+report_only = ["elite_truth delta (re-evaluation ceiling)", "decision accuracy per rule", "placement_acc", "qd_corrected_over_stored (offset by run min)", "corr_survived_luck", "herit_mu, herit_log_sd (parent1 -> offspring)", "contested per probe"]
+
+[resources]
+partition = "lem-gpu-short"
+per_task = "1 H100, -c 8, 16 GB, --time 0-04:00:00"
+estimate = "~1 GPU-h each (unmeasured on GPU); upper bound 8 GPU-h, 64 CPU-h"
+
+[cluster]
+ssh_host = "wcss"
+
+[report]
+url = ""

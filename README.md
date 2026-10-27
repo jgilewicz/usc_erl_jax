@@ -143,13 +143,42 @@ seed 0; details in the gitignored `notes.md`):
   in TD3, not from the gate;
 - MC-dropout critics diverge around 640–700k steps.
 
+## MAP-Elites + UQD probe
+
+Uncertain-QD premise probe: under evaluation noise, are archive elites
+lucky, and would a shrinkage replacement rule decide better? Impl:
+`src/algos/map_elites.py`, config: `src/conf/algorithm/map_elites.yaml`.
+
+- **Tasks** (`src/environments/brax_qd.py`, brax 0.14 on the MJX
+  backend, GPU): `walker2d-uni` (feet-contact descriptor, 1000 steps),
+  `ant-omni` (final x-y, 250 steps). Noise = brax reset noise, one fresh
+  key per episode.
+- **Algorithm**: grid archive (`src/common/qd_archive.py`), iso+line-DD
+  variation, MLP genomes (`src/modules/mlp_policy.py`), budget =
+  `iterations × batch_size` evaluations; `total_steps` is ignored.
+- **Probe** (`algorithm.uqd_probe=true`, `src/common/uqd_probe.py`):
+  every `probe_interval` iterations, every elite and offspring is
+  re-evaluated `probe_repeats` times on its own key stream; lineage
+  (birth, parent, survived challenges) is tracked per cell. Writes
+  `<hydra run dir>/uqd_probe.npz`; metric only, never fed back.
+  Online: `uqd/lucky_gap`, `uqd/placement_acc`, `uqd/decision_acc`.
+- **Verdict**: `python -m analysis.uqd_report walker2d-uni=<npz>
+  ant-omni=<npz>`, pre-registered in
+  `experiments/uqd-probe-v1/experiment.toml`.
+
+```bash
+cd src && python train.py algorithm=map_elites env.id=walker2d-uni \
+  algorithm.uqd_probe=true
+```
+
 ## Tooling
 
 - `justfile`: `install`, `lint`/`lint-check`, `types`, `check`, `train`,
   `train-all`.
 - `slurm_run_array.sh`: the only slurm script; one `(condition, seed)`
   per task — sac, ppo, td3, crossq, erl, `sc_erl-random`, 3 σ-modes with
-  the uncertainty gate, 3 with `random_gate`; 12 × 5 = 60 tasks. Run
+  the uncertainty gate, 3 with `random_gate`, `map_elites-uqd` (brax QD
+  tasks only); 13 × 5 = 65 tasks. Run
   `sbatch` from the checkout (or set `PROJECT_DIR`); it runs
   `.venv/bin/python` directly, so `uv sync` on the login node first.
   `EXTRA="..."` appends Hydra overrides to every task in the array (keys

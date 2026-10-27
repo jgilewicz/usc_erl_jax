@@ -1,0 +1,19 @@
+# @package algorithm
+# MAP-Elites on a brax QD task (env.id = walker2d-uni | ant-omni); the
+# budget is `iterations` batches, total_steps is unused
+name: map_elites
+iterations: 2000
+batch_size: 256
+grid_shape: [32, 32]
+hidden: [64, 64]
+iso_sigma: 0.005
+line_sigma: 0.05
+# episodes per vmapped evaluation chunk (GPU memory knob)
+eval_chunk: 4096
+log_interval: 10
+# re-evaluate every elite and offspring probe_repeats times each
+# probe_interval iterations, dump to <hydra run dir>/uqd_probe.npz
+# (metric only; each probe costs ~(cells + batch) * repeats episodes)
+uqd_probe: false
+probe_interval: 100
+probe_repeats: 16
