@@ -56,3 +56,11 @@ ssh_host = "wcss"
 
 [report]
 url = ""
+
+# submitted 2026-10-27 @ 9026327, array task 25 (sc_erl-random, seed 0),
+# lem-gpu-short, 8 cpu 16gb; the previous outputs/sc_erl-random_
+# HalfCheetah-v5_s0 (crn/screen/signal dumps) renamed *.pre-behavior-probe
+# offline analysis: cd src && python -m analysis.behavior_report <npz>
+[[jobs]]
+id = "6172300"
+env = "HalfCheetah-v5"
